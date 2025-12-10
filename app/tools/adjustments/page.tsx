@@ -473,13 +473,15 @@ export default function AdjustmentsPage() {
 
     setSubmitting(true)
     try {
-      // Build updated participants_json
+      // The API looks for partner_airtable_id, agent_id, airtable_id, or id - NOT partner_id
       const updatedParticipants = adjustmentParticipants.map((p) => ({
+        partner_airtable_id: p.partner_id, // API expects this field name
+        agent_id: p.partner_id, // Fallback field the API also checks
         partner_id: p.partner_id,
         partner_name: p.partner_name,
-        name: p.partner_name, // Assuming partner_name is the primary name to display
+        name: p.partner_name,
         role: p.role,
-        partner_role: p.role, // Also set partner_role for consistency if used
+        partner_role: p.role,
         split_pct: p.new_split_pct,
       }))
 
