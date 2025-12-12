@@ -1,0 +1,4 @@
+﻿Payout ID,Deal ID,MID,Merchant Name,Payout Month,Payout Date,Partner ID,Partner Name,Partner Role,Split %,Payout Amount,Volume,Fees,Net Residual,Payout Type,Status,Paid Status,Paid At,Is Legacy
+d6996b24-43aa-4ed1-87bf-ccaf752a04c5,3a7c82fd-2d1f-46f3-a8e7-a61cc65a2ffb,0022785673,AJS WINE & DINE GARAGE ,2025-10,,recIhQvZPTRO0aeod,Ian Hamilton,Partner,65.0,975.00,0.0,1500.00,1500.00,upfront,pending,unpaid,,No
+...
+d371fee8-d6b3-4eae-93ef-f44559e4823a,deal_c90f55b1,40113276524,Ascension Processing Solutions LLC,2025-09,2023-10-18,lumino-company,Lumino (Company),Company,100.0,0.76,62.4,0.76,0.76,residual,confirmed,paid,2025-11-10 21:05,Yes
