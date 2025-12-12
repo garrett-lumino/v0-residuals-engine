@@ -132,6 +132,20 @@ export async function POST(request: NextRequest) {
         role: p.partner_role || p.role,
         split_pct: p.split_pct,
       }))
+
+      // Validate existing deal participants have Airtable IDs
+      const invalidParticipants = participants.filter(
+        (p: Participant) => !p.agent_id || p.agent_id.trim() === ""
+      )
+      if (invalidParticipants.length > 0) {
+        const names = invalidParticipants.map((p: Participant) => p.agent_name || "Unknown").join(", ")
+        console.error("[assign-event] Existing deal has missing Airtable IDs:", names)
+        return NextResponse.json(
+          { error: `This deal has participants with missing Airtable IDs: ${names}. Please edit the deal to fix.` },
+          { status: 400 }
+        )
+      }
+
       finalDealId = deal_id
     }
 

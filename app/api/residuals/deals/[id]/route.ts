@@ -79,6 +79,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
           // Track which payouts we've matched
           const matchedPayoutIds = new Set<string>()
 
+          // Validate all participants have Airtable IDs before processing
+          const invalidParticipants = newParticipants.filter(
+            (p: any) => {
+              const id = p.partner_airtable_id || p.agent_id || p.airtable_id || p.id
+              return !id || (typeof id === 'string' && id.trim() === "")
+            }
+          )
+          if (invalidParticipants.length > 0) {
+            const names = invalidParticipants.map((p: any) => p.partner_name || p.name || "Unknown").join(", ")
+            return NextResponse.json(
+              { success: false, error: `Missing Airtable IDs for participants: ${names}` },
+              { status: 400 }
+            )
+          }
+
           // For each new participant, find matching payout
           for (const participant of newParticipants) {
             const splitPct = participant.split_pct || 0
@@ -87,8 +102,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
               participant.partner_airtable_id ||
               participant.agent_id ||
               participant.airtable_id ||
-              participant.id ||
-              null
+              participant.id
 
             // First try to match by partner_airtable_id
             let existingPayout = participantAirtableId

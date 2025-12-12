@@ -298,11 +298,13 @@ export async function POST(request: NextRequest) {
     const eventsNeedingPayouts = eventsToConfirm.filter((e) => !eventsWithPayouts.has(e.id))
 
     const allPayoutIds: string[] = existingPayouts?.map((p) => p.id) || []
+    const eventsWithBadParticipants: string[] = []
 
     if (eventsNeedingPayouts.length > 0) {
       console.log("[confirm-assignment] Creating missing payouts for", eventsNeedingPayouts.length, "events")
 
       const payoutRows = []
+
       for (const event of eventsNeedingPayouts) {
         const deal = dealsMap[event.deal_id]
         if (!deal || !deal.participants_json) {
@@ -311,14 +313,25 @@ export async function POST(request: NextRequest) {
         }
 
         const participants = deal.participants_json as any[]
+
+        // Validate participants have Airtable IDs
+        const normalizedParticipants = participants.map((p: any) => normalizeParticipant(p as Record<string, unknown>))
+        const invalidParticipants = normalizedParticipants.filter(
+          (p: any) => !p.partner_airtable_id || p.partner_airtable_id.trim() === ""
+        )
+        if (invalidParticipants.length > 0) {
+          const names = invalidParticipants.map((p: any) => p.partner_name || "Unknown").join(", ")
+          console.error("[confirm-assignment] Event", event.id, "has participants with missing Airtable IDs:", names)
+          eventsWithBadParticipants.push(`${event.merchant_name || event.mid}: ${names}`)
+          continue // Skip this event
+        }
+
         const fees = Number.parseFloat(event.fees) || 0
         const adjustments = Number.parseFloat(event.adjustments) || 0
         const chargebacks = Number.parseFloat(event.chargebacks) || 0
         const netResidual = fees - adjustments - chargebacks
 
-        for (const rawParticipant of participants) {
-          // Normalize field names for backwards compatibility with old data
-          const participant = normalizeParticipant(rawParticipant as Record<string, unknown>)
+        for (const participant of normalizedParticipants) {
           const splitPct = participant.split_pct || 0
           const amount = (netResidual * splitPct) / 100
           payoutRows.push({
@@ -380,12 +393,14 @@ export async function POST(request: NextRequest) {
       skipped: eventsWithoutDeals.length + eventsWithoutParticipants.length,
       skipped_without_deals: eventsWithoutDeals.length,
       skipped_without_participants: eventsWithoutParticipants.length,
+      skipped_missing_partner_ids: eventsWithBadParticipants.length,
       payouts_updated: !payoutsUpdateError,
       airtable_synced: airtableResult.synced,
       // Include details about skipped events so frontend can show them
       skipped_events: [
         ...eventsWithoutDeals.map((e) => ({ id: e.id, mid: e.mid, merchant: e.merchant_name, reason: "no_deal" })),
         ...eventsWithoutParticipants.map((e) => ({ id: e.id, mid: e.mid, merchant: e.merchant_name, reason: "no_participants" })),
+        ...eventsWithBadParticipants.map((desc) => ({ reason: "missing_partner_ids", description: desc })),
       ],
     })
   } catch (error: any) {
