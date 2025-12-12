@@ -37,6 +37,21 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     const body = await request.json()
     const supabase = await createClient()
 
+    // Validate participants_json if provided
+    if (body.participants_json && Array.isArray(body.participants_json)) {
+      const invalidParticipants = body.participants_json.filter(
+        (p: any) => !p.partner_airtable_id || p.partner_airtable_id.trim() === ""
+      )
+      if (invalidParticipants.length > 0) {
+        const names = invalidParticipants.map((p: any) => p.partner_name || "Unknown").join(", ")
+        console.error("[deals PATCH] Missing Airtable IDs for participants:", names)
+        return NextResponse.json(
+          { success: false, error: `Missing Airtable IDs for participants: ${names}. Please select valid partners.` },
+          { status: 400 }
+        )
+      }
+    }
+
     const { data: dealBefore } = await supabase.from("deals").select("*").eq("id", id).single()
 
     const { data, error } = await supabase
@@ -104,6 +119,19 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     // Frontend sends { participants: [...] } but DB needs { participants_json: [...] }
     const rawParticipants = body.participants || body.participants_json || []
     const normalizedParticipants = rawParticipants.map(normalizeParticipant)
+
+    // Validate that all participants have Airtable IDs
+    const invalidParticipants = normalizedParticipants.filter(
+      (p: any) => !p.partner_airtable_id || p.partner_airtable_id.trim() === ""
+    )
+    if (invalidParticipants.length > 0) {
+      const names = invalidParticipants.map((p: any) => p.partner_name || "Unknown").join(", ")
+      console.error("[PUT deals] Missing Airtable IDs for participants:", names)
+      return NextResponse.json(
+        { success: false, error: `Missing Airtable IDs for participants: ${names}. Please select valid partners.` },
+        { status: 400 }
+      )
+    }
 
     // Update the deal with normalized participants
     const { data: updatedDeal, error: updateError } = await supabase
