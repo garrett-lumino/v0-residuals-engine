@@ -260,19 +260,14 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
       console.error("Error deleting payouts:", payoutsError)
     }
 
-    // Reset csv_data assignment status for events linked to this deal
+    // DELETE csv_data records linked to this deal (not reset - full delete)
     const { error: csvError } = await supabase
       .from("csv_data")
-      .update({
-        assignment_status: "unassigned",
-        deal_id: null,
-        assigned_agent_id: null,
-        assigned_agent_name: null,
-      })
+      .delete()
       .eq("deal_id", id)
 
     if (csvError) {
-      console.error("Error resetting csv_data:", csvError)
+      console.error("Error deleting csv_data:", csvError)
     }
 
     // Delete the deal
