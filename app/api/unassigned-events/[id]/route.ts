@@ -77,12 +77,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   try {
     const { id } = await params
     const body = await request.json()
-    const { mid, merchant_name } = body
+    const { mid: rawMid, merchant_name } = body
 
     const supabase = await createClient()
 
     const updateData: Record<string, string> = {}
-    if (mid !== undefined) updateData.mid = mid
+    // IMPORTANT: Preserve MID exactly as provided - never convert to number
+    // Leading zeros must be preserved
+    if (rawMid !== undefined) updateData.mid = String(rawMid).trim()
     if (merchant_name !== undefined) updateData.merchant_name = merchant_name
 
     const { data, error } = await supabase.from("csv_data").update(updateData).eq("id", id).select().single()

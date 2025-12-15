@@ -237,7 +237,8 @@ export function ConfirmedDealViewer({ event, events, isOpen = false, onClose, on
     try {
       console.log("[v0] Deleting confirmed event:", event.id)
 
-      const response = await fetch(`/api/unassigned-events/${event.id}`, {
+      // Use /delete endpoint which handles confirmed events (not the base endpoint which only handles unassigned/pending)
+      const response = await fetch(`/api/unassigned-events/${event.id}/delete`, {
         method: "DELETE",
       })
 

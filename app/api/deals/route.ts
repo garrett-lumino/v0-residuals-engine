@@ -8,7 +8,11 @@ export async function POST(request: NextRequest) {
 
   try {
     const body = await request.json()
-    const { eventIds, mid, participants: rawParticipants, payout_type } = body
+    const { eventIds, mid: rawMid, participants: rawParticipants, payout_type } = body
+
+    // IMPORTANT: Preserve MID exactly as provided - never convert to number
+    // Leading zeros must be preserved
+    const mid = String(rawMid || "").trim()
 
     if (!rawParticipants || rawParticipants.length === 0) {
       return NextResponse.json({ success: false, error: "At least one participant is required" }, { status: 400 })
@@ -249,14 +253,19 @@ export async function GET(request: NextRequest) {
         }
       }
 
-      const mids = [...new Set((allDeals || []).map((d) => d.mid).filter(Boolean))]
+      // Get merchant names by deal_id (UUID) - more reliable than matching by MID
+      // since MIDs can have formatting differences (leading zeros, etc.)
+      const dealIds = (allDeals || []).map((d) => d.id).filter(Boolean)
       const merchantMap: Record<string, string> = {}
 
-      if (mids.length > 0) {
-        const { data: payouts } = await supabase.from("payouts").select("mid, merchant_name").in("mid", mids)
+      if (dealIds.length > 0) {
+        const { data: payouts } = await supabase
+          .from("payouts")
+          .select("deal_id, merchant_name")
+          .in("deal_id", dealIds)
         payouts?.forEach((p) => {
-          if (p.mid && p.merchant_name && !merchantMap[p.mid]) {
-            merchantMap[p.mid] = p.merchant_name
+          if (p.deal_id && p.merchant_name && !merchantMap[p.deal_id]) {
+            merchantMap[p.deal_id] = p.merchant_name
           }
         })
       }
@@ -274,7 +283,7 @@ export async function GET(request: NextRequest) {
 
         return {
           ...deal,
-          merchant_name: deal.mid ? merchantMap[deal.mid] || null : null,
+          merchant_name: deal.id ? merchantMap[deal.id] || null : null,
           participants_json: parsedParticipants,
           is_pending: false,
         }

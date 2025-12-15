@@ -70,9 +70,13 @@ export async function POST(request: NextRequest) {
         )
       }
 
+      // IMPORTANT: Preserve MID exactly as provided - never convert to number
+      // Leading zeros must be preserved
+      const midString = String(new_deal.mid || "").trim()
+
       const dealPayload = {
         deal_id: generatedDealId,
-        mid: new_deal.mid,
+        mid: midString,
         payout_type: new_deal.payout_type || "residual",
         participants_json: new_deal.participants.map((p: Participant) => ({
           partner_airtable_id: p.agent_id,
@@ -174,59 +178,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: `Failed to update event: ${updateError.message}` }, { status: 500 })
     }
 
-    if (finalStatus === "pending" || finalStatus === "confirmed") {
-      console.log("[assign-event] Creating payout records for participants:", participants)
-
-      const fees = Number.parseFloat(eventData.fees) || 0
-      const adjustments = Number.parseFloat(eventData.adjustments) || 0
-      const chargebacks = Number.parseFloat(eventData.chargebacks) || 0
-      const netResidual = fees - adjustments - chargebacks
-
-      console.log("[assign-event] Payout calculation:", { fees, adjustments, chargebacks, netResidual })
-
-      for (const participant of participants) {
-        const splitPct = participant.split_pct || 0
-        const payoutAmount = (netResidual * splitPct) / 100
-
-        const payoutRecord = {
-          csv_data_id: event_id,
-          deal_id: finalDealId ? String(finalDealId) : null,
-          mid: eventData.mid,
-          merchant_name: eventData.merchant_name,
-          payout_month: eventData.payout_month,
-          payout_type: new_deal?.payout_type || eventData.payout_type || "residual",
-          volume: eventData.volume,
-          fees: fees,
-          adjustments: adjustments,
-          chargebacks: chargebacks,
-          net_residual: netResidual,
-          partner_airtable_id: participant.agent_id,
-          partner_role: participant.role,
-          partner_name: participant.agent_name || null,
-          partner_split_pct: splitPct,
-          partner_payout_amount: payoutAmount,
-          assignment_status: finalStatus,
-          paid_status: "unpaid",
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }
-
-        console.log("[assign-event] Creating payout:", {
-          partner: participant.agent_id,
-          partner_name: participant.agent_name,
-          split: splitPct,
-          amount: payoutAmount,
-        })
-
-        const { error: payoutError } = await supabase.from("payouts").upsert(payoutRecord, {
-          onConflict: "csv_data_id,partner_airtable_id",
-        })
-
-        if (payoutError) {
-          console.error("[assign-event] Payout creation error:", payoutError)
-        }
-      }
-    }
+    // NOTE: Payouts are NOT created here - they are created in confirm-assignment
+    // This endpoint only creates/updates deals and sets status to "pending"
+    // Payouts should only exist after deals are finalized/confirmed
 
     console.log("[assign-event] Success! Deal ID:", finalDealId, "Status:", finalStatus)
 

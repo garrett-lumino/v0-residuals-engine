@@ -169,6 +169,12 @@ export default function AdjustmentsPage() {
   const [merging, setMerging] = useState(false)
   const [mergeHistory, setMergeHistory] = useState<MergeRecord[]>([])
 
+  // Delete deal state
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [dealToDelete, setDealToDelete] = useState<Deal | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
+
   // Stats
   const [stats, setStats] = useState({
     totalAdjustments: 0,
@@ -647,6 +653,53 @@ export default function AdjustmentsPage() {
     setAdjustmentParticipants((prev) => prev.filter((p) => p.index !== index))
   }
 
+  // Delete deal handler
+  const handleDeleteDeal = async () => {
+    if (!dealToDelete || deleteConfirmText !== "DELETE") return
+
+    setDeleting(true)
+    try {
+      // Use the delete endpoint that handles all statuses
+      const response = await fetch(`/api/residuals/deals/${dealToDelete.id}`, {
+        method: "DELETE",
+      })
+
+      const data = await response.json()
+
+      if (response.ok && data.success) {
+        toast({
+          title: "Deal Deleted",
+          description: `Successfully deleted deal ${dealToDelete.deal_id} and its associated data`,
+        })
+        setDeleteDialogOpen(false)
+        setDealToDelete(null)
+        setDeleteConfirmText("")
+        fetchDeals()
+      } else {
+        toast({
+          title: "Deletion Failed",
+          description: data.error || "Failed to delete deal. Please try again.",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      console.error("[adjustments] Error deleting deal:", error)
+      toast({
+        title: "Error",
+        description: "An error occurred while deleting the deal.",
+        variant: "destructive",
+      })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  const openDeleteDialog = (deal: Deal) => {
+    setDealToDelete(deal)
+    setDeleteConfirmText("")
+    setDeleteDialogOpen(true)
+  }
+
   const updateParticipantDetails = (index: number, field: string, value: any) => {
     setAdjustmentParticipants((prev) =>
       prev.map((p) => {
@@ -790,9 +843,17 @@ export default function AdjustmentsPage() {
                         </Badge>
                       </div>
                       <div>{(deal.participants_json || []).length} participants</div>
-                      <div>
+                      <div className="flex items-center gap-2">
                         <Button size="sm" onClick={() => openAdjustmentDialog(deal)}>
                           Create Adjustment
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                          onClick={() => openDeleteDialog(deal)}
+                        >
+                          <Trash2 className="h-4 w-4" />
                         </Button>
                       </div>
                     </div>
@@ -1348,6 +1409,61 @@ export default function AdjustmentsPage() {
                 </>
               ) : (
                 "Confirm Merge"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Delete Deal Confirmation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-destructive">Delete Deal</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-4">
+                <p>
+                  You are about to permanently delete this deal and all associated data:
+                </p>
+                <div className="rounded-lg border bg-muted/50 p-3 space-y-1">
+                  <p><span className="font-medium">Deal ID:</span> {dealToDelete?.deal_id}</p>
+                  <p><span className="font-medium">Merchant:</span> {dealToDelete?.merchant_name || "Unknown"}</p>
+                  <p><span className="font-medium">MID:</span> {dealToDelete?.mid}</p>
+                  <p><span className="font-medium">Participants:</span> {dealToDelete?.participants_json?.length || 0}</p>
+                </div>
+                <p className="text-destructive font-medium">
+                  This will also delete all payouts and CSV data associated with this deal. This action cannot be undone.
+                </p>
+                <div className="space-y-2">
+                  <Label htmlFor="delete-confirm">Type DELETE to confirm:</Label>
+                  <Input
+                    id="delete-confirm"
+                    value={deleteConfirmText}
+                    onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder="DELETE"
+                    className="font-mono"
+                  />
+                </div>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setDeleteConfirmText("")}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteDeal}
+              disabled={deleting || deleteConfirmText !== "DELETE"}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete Deal
+                </>
               )}
             </AlertDialogAction>
           </AlertDialogFooter>

@@ -53,19 +53,54 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
     }
 
     const { data: dealBefore } = await supabase.from("deals").select("*").eq("id", id).single()
+    const oldMid = dealBefore?.mid
+    // IMPORTANT: Preserve MID exactly as provided - never convert to number
+    // Leading zeros must be preserved
+    const newMid = body.mid !== undefined ? String(body.mid).trim() : undefined
+
+    // Update the deal - ensure MID is preserved as string
+    const updatePayload = {
+      ...body,
+      updated_at: new Date().toISOString(),
+    }
+    if (newMid !== undefined) {
+      updatePayload.mid = newMid // Use the sanitized string version
+    }
 
     const { data, error } = await supabase
       .from("deals")
-      .update({
-        ...body,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq("id", id)
       .select()
       .single()
 
     if (error) {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 })
+    }
+
+    // If MID changed, cascade update to payouts and csv_data
+    if (newMid && newMid !== oldMid) {
+      console.log(`[deals PATCH] MID changed from ${oldMid} to ${newMid}, cascading to related records...`)
+
+      // Update payouts linked to this deal
+      const { error: payoutsError } = await supabase
+        .from("payouts")
+        .update({ mid: newMid, updated_at: new Date().toISOString() })
+        .eq("deal_id", id)
+
+      if (payoutsError) {
+        console.error("[deals PATCH] Error updating payouts:", payoutsError)
+      }
+
+      // Update csv_data linked to this deal
+      const { error: csvError } = await supabase
+        .from("csv_data")
+        .update({ mid: newMid, updated_at: new Date().toISOString() })
+        .eq("deal_id", id)
+
+      if (csvError) {
+        console.error("[deals PATCH] Error updating csv_data:", csvError)
+      }
     }
 
     // PARSE STRING TO ARRAY

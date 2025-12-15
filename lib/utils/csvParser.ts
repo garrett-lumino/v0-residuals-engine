@@ -89,16 +89,20 @@ export async function parseCsvFile(fileContent: string, options?: CsvParseOption
               continue
             }
 
-            const merchantName = row.merchant_name || `Merchant ${row.mid}`
+            // IMPORTANT: Always preserve MID as a string exactly as it appears in CSV
+            // Never convert to number as this strips leading zeros
+            const midString = String(row.mid).trim()
+
+            const merchantName = row.merchant_name || `Merchant ${midString}`
 
             const payoutMonth = options?.payoutMonth || row.payout_month || new Date().toISOString().slice(0, 7)
 
-            // Generate hash for duplicate detection - use the payout_month that will be stored
-            const hashInput = `${row.mid}|${payoutMonth}|${volume}|${fees}`
+            // Generate hash for duplicate detection - use the midString that will be stored
+            const hashInput = `${midString}|${payoutMonth}|${volume}|${fees}`
             const row_hash = await generateHash(hashInput)
 
             rows.push({
-              mid: row.mid,
+              mid: midString,
               merchant_name: merchantName,
               volume,
               fees,

@@ -34,22 +34,83 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
 
     const column = isUUID(id) ? "id" : "deal_id"
 
-    // First, get the current deal to check if participants_json is being updated
+    // First, get the current deal to check if participants_json or MID is being updated
     const { data: currentDeal } = await supabase.from("deals").select("*").eq(column, id).single()
 
-    // Update the deal
+    if (!currentDeal) {
+      return NextResponse.json({ success: false, error: "Deal not found" }, { status: 404 })
+    }
+
+    const oldMid = currentDeal.mid
+    // IMPORTANT: Preserve MID exactly as provided - never convert to number
+    // Leading zeros must be preserved
+    const newMid = body.mid !== undefined ? String(body.mid).trim() : undefined
+
+    // If MID is changing, check for existing deal with new MID
+    if (newMid && newMid !== oldMid) {
+      const { data: existingDealWithMid } = await supabase
+        .from("deals")
+        .select("id, deal_id")
+        .eq("mid", newMid)
+        .neq("id", currentDeal.id)
+        .single()
+
+      if (existingDealWithMid) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `A deal already exists with MID ${newMid} (${existingDealWithMid.deal_id}). Delete or merge that deal first.`
+          },
+          { status: 400 }
+        )
+      }
+    }
+
+    // Update the deal - ensure MID is preserved as string
+    const updatePayload = {
+      ...body,
+      updated_at: new Date().toISOString(),
+    }
+    if (newMid !== undefined) {
+      updatePayload.mid = newMid // Use the sanitized string version
+    }
+
     const { data, error } = await supabase
       .from("deals")
-      .update({
-        ...body,
-        updated_at: new Date().toISOString(),
-      })
+      .update(updatePayload)
       .eq(column, id)
       .select()
       .single()
 
     if (error) {
       return NextResponse.json({ success: false, error: error.message }, { status: 500 })
+    }
+
+    // If MID changed, update all related records
+    if (newMid && newMid !== oldMid) {
+      console.log(`[deals API] MID changed from ${oldMid} to ${newMid}, updating related records...`)
+
+      // Update payouts with old MID that belong to this deal
+      const { error: payoutsError } = await supabase
+        .from("payouts")
+        .update({ mid: newMid, updated_at: new Date().toISOString() })
+        .eq("deal_id", currentDeal.id)
+
+      if (payoutsError) {
+        console.error("[deals API] Error updating payouts MID:", payoutsError)
+      }
+
+      // Update csv_data with old MID that belong to this deal
+      const { error: csvError } = await supabase
+        .from("csv_data")
+        .update({ mid: newMid, updated_at: new Date().toISOString() })
+        .eq("deal_id", currentDeal.id)
+
+      if (csvError) {
+        console.error("[deals API] Error updating csv_data MID:", csvError)
+      }
+
+      console.log(`[deals API] Updated MID from ${oldMid} to ${newMid} for deal ${currentDeal.id}`)
     }
 
     if (body.participants_json && currentDeal) {
