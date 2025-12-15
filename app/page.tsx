@@ -209,7 +209,7 @@ export default async function DashboardPage() {
             {stats.topMerchants.length > 0 ? (
               <div className="space-y-4">
                 {stats.topMerchants.map((merchant, idx) => (
-                  <div key={merchant.name} className="flex items-center justify-between">
+                  <div key={`${merchant.name}-${idx}`} className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-xs font-semibold">
                         {idx + 1}

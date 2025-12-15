@@ -49,8 +49,8 @@ export default async function RootLayout({
   // Skip Clerk auth on localhost for development
   if (isLocalhost) {
     return (
-      <html lang="en">
-        <body className={`font-sans antialiased flex h-screen overflow-hidden bg-background`}>
+      <html lang="en" suppressHydrationWarning>
+        <body className={`font-sans antialiased flex h-screen overflow-hidden bg-background`} suppressHydrationWarning>
           <Sidebar />
           <main className="flex-1 overflow-y-auto">
             <div className="h-full p-8">{children}</div>
@@ -68,8 +68,8 @@ export default async function RootLayout({
 
   return (
     <ClerkProvider>
-      <html lang="en">
-        <body className={`font-sans antialiased flex h-screen overflow-hidden bg-background`}>
+      <html lang="en" suppressHydrationWarning>
+        <body className={`font-sans antialiased flex h-screen overflow-hidden bg-background`} suppressHydrationWarning>
           <SignedIn>
             {isAuthorized ? (
               <>
