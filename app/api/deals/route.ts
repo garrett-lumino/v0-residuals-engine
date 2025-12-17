@@ -184,6 +184,7 @@ export async function GET(request: NextRequest) {
     const limit = Number.parseInt(searchParams.get("limit") || "100")
     const search = searchParams.get("search") || ""
     const includePending = searchParams.get("includePending") === "true"
+    const confirmedOnly = searchParams.get("confirmedOnly") === "true"
 
     const supabase = await createClient()
 
@@ -299,6 +300,33 @@ export async function GET(request: NextRequest) {
       })
 
       let combinedResults = [...dealsWithMerchants, ...pendingItems]
+
+      // If confirmedOnly=true, filter out deals that have NO confirmed events
+      // (i.e., only show deals that have at least one confirmed csv_data event)
+      if (confirmedOnly) {
+        const dealIds = dealsWithMerchants.map((d) => d.id).filter(Boolean)
+
+        if (dealIds.length > 0) {
+          // Get count of confirmed events per deal
+          const { data: confirmedCounts } = await supabase
+            .from("csv_data")
+            .select("deal_id")
+            .in("deal_id", dealIds)
+            .eq("assignment_status", "confirmed")
+
+          // Create a set of deal IDs that have at least one confirmed event
+          const dealsWithConfirmedEvents = new Set(
+            (confirmedCounts || []).map((c) => c.deal_id)
+          )
+
+          // Filter to only include deals with confirmed events
+          combinedResults = combinedResults.filter((deal) => {
+            // Keep pending items (synthetic) if needed, but filter real deals
+            if (deal.is_pending) return false // Don't include pending items in confirmedOnly mode
+            return dealsWithConfirmedEvents.has(deal.id)
+          })
+        }
+      }
 
       if (search) {
         const searchLower = search.toLowerCase()

@@ -195,7 +195,8 @@ export default function AdjustmentsPage() {
   const fetchDeals = useCallback(async () => {
     setLoading(true)
     try {
-      const params = new URLSearchParams({ list: "true", limit: "100", includePending: "true" })
+      // Don't include pending deals in Adjustments - only show confirmed deals
+      const params = new URLSearchParams({ list: "true", limit: "100", confirmedOnly: "true" })
       if (searchQuery) params.set("search", searchQuery)
 
       const res = await fetch(`/api/deals?${params}`)
