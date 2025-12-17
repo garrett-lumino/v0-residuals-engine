@@ -72,7 +72,7 @@ export async function POST() {
 
       const { error: insertError } = await supabase
         .from("deals")
-        .upsert(batch, { onConflict: "mid", ignoreDuplicates: false })
+        .upsert(batch, { onConflict: "mid,payout_type", ignoreDuplicates: false })
 
       if (insertError) {
         console.error(`[v0] Error inserting batch ${i / batchSize + 1}:`, insertError.message)

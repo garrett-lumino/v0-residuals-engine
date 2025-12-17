@@ -101,7 +101,8 @@ export async function POST(request: NextRequest) {
             created_at: new Date().toISOString(),
           },
           {
-            onConflict: "mid",
+            // Each MID can have multiple deals (one per payout_type)
+            onConflict: "mid,payout_type",
             ignoreDuplicates: false,
           },
         )
