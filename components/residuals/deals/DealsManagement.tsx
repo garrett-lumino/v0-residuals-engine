@@ -135,7 +135,12 @@ export function DealsManagement() {
 
         if (json.success) {
           if (isLoadMore) {
-            setDeals((prev) => [...prev, ...json.data])
+            // Deduplicate by ID to prevent React key errors from race conditions
+            setDeals((prev) => {
+              const existingIds = new Set(prev.map((d) => d.id))
+              const newDeals = json.data.filter((d: Deal) => !existingIds.has(d.id))
+              return [...prev, ...newDeals]
+            })
           } else {
             setDeals(json.data)
           }

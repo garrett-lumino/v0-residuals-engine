@@ -6,7 +6,45 @@ const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || "appRygdwVIEtbUI1C"
 const AIRTABLE_TABLE_ID = "tblWZlEw6pM9ytA1x"
 
-const formatPayoutForAirtable = (payout: any) => {
+/**
+ * Payout with joined partner data from partners table
+ * Uses the new normalized schema where partner info comes from JOIN
+ */
+interface PayoutWithPartner {
+  id: string
+  deal_id: string | null
+  mid: string | null
+  merchant_name: string | null
+  payout_month: string | null
+  payout_date: string | null
+  partner_split_pct: number | null
+  partner_payout_amount: number | null
+  volume: number | null
+  fees: number | null
+  net_residual: number | null
+  payout_type: string | null
+  assignment_status: string | null
+  paid_status: string | null
+  paid_at: string | null
+  is_legacy_import: boolean | null
+  partner_id: string | null
+  // Legacy fields (for backward compatibility during migration)
+  partner_airtable_id?: string | null
+  partner_name?: string | null
+  partner_role?: string | null
+  // Joined partner data from partners table
+  partner: {
+    external_id: string | null
+    name: string
+    role: string
+  } | null
+}
+
+/**
+ * Format payout for Airtable sync
+ * Uses joined partner data when available, falls back to legacy columns
+ */
+const formatPayoutForAirtable = (payout: PayoutWithPartner) => {
   const record: Record<string, any> = {
     "Payout ID": payout.id,
     "Split %": payout.partner_split_pct || 0,
@@ -23,10 +61,17 @@ const formatPayoutForAirtable = (payout: any) => {
   if (payout.merchant_name) record["Merchant Name"] = payout.merchant_name
   if (payout.payout_month) record["Payout Month"] = payout.payout_month
   if (payout.payout_date) record["Payout Date"] = payout.payout_date
-  if (payout.partner_airtable_id) record["Partner ID"] = payout.partner_airtable_id
-  if (payout.partner_name) record["Partner Name"] = payout.partner_name
+
+  // Partner data: prefer joined partner table, fall back to legacy columns
+  const partnerId = payout.partner?.external_id || payout.partner_airtable_id
+  const partnerName = payout.partner?.name || payout.partner_name
+  const partnerRole = payout.partner?.role || payout.partner_role
+
+  if (partnerId) record["Partner ID"] = partnerId
+  if (partnerName) record["Partner Name"] = partnerName
+  if (partnerRole) record["Partner Role"] = partnerRole
+
   if (payout.paid_at) record["Paid At"] = payout.paid_at
-  if (payout.partner_role) record["Partner Role"] = payout.partner_role
   if (payout.payout_type) record["Payout Type"] = payout.payout_type
   if (payout.assignment_status) record["Status"] = payout.assignment_status
   if (payout.paid_status) record["Paid Status"] = payout.paid_status
@@ -52,14 +97,26 @@ export async function POST(request: Request) {
 
     const supabase = await createServerClient()
 
-    // Step 1: Fetch ALL payouts from Supabase with explicit large limit
-    let query = supabase.from("payouts").select("*").order("created_at", { ascending: false }).limit(10000)
+    // Step 1: Fetch ALL payouts with joined partner data from partners table
+    // Uses the new normalized schema - partner info comes from JOIN instead of denormalized columns
+    let query = supabase
+      .from("payouts")
+      .select(`
+        *,
+        partner:partners!partner_id (
+          external_id,
+          name,
+          role
+        )
+      `)
+      .order("created_at", { ascending: false })
+      .limit(10000)
 
     if (month) {
       query = query.eq("payout_month", month)
     }
 
-    const { data: allPayouts, error } = await query
+    const { data: allPayouts, error } = await query as { data: PayoutWithPartner[] | null; error: any }
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })

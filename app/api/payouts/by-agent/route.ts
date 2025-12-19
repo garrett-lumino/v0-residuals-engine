@@ -1,6 +1,21 @@
 import { createClient } from "@/lib/db/server"
 import { type NextRequest, NextResponse } from "next/server"
 
+/**
+ * Payout with joined partner data from partners table
+ */
+interface PayoutWithPartner {
+  partner_payout_amount: number | null
+  paid_status: string | null
+  partner_airtable_id?: string | null
+  partner_name?: string | null
+  partner: {
+    external_id: string | null
+    name: string
+    email: string | null
+  } | null
+}
+
 export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient()
@@ -9,10 +24,20 @@ export async function GET(request: NextRequest) {
     const offset = Number.parseInt(searchParams.get("offset") || "0")
     const limit = Number.parseInt(searchParams.get("limit") || "50")
 
-    // Get aggregated data by partner
+    // Get aggregated data by partner with JOIN to partners table
     const { data: payouts, error } = await supabase
       .from("payouts")
-      .select("partner_airtable_id, partner_name, partner_payout_amount, paid_status")
+      .select(`
+        partner_payout_amount,
+        paid_status,
+        partner_airtable_id,
+        partner_name,
+        partner:partners!partner_id (
+          external_id,
+          name,
+          email
+        )
+      `) as { data: PayoutWithPartner[] | null; error: any }
 
     if (error) throw error
 
@@ -31,14 +56,18 @@ export async function GET(request: NextRequest) {
     >()
 
     for (const payout of payouts || []) {
-      const id = payout.partner_airtable_id
+      // Prefer joined partner data, fall back to legacy columns
+      const id = payout.partner?.external_id || payout.partner_airtable_id
+      const name = payout.partner?.name || payout.partner_name || "Unknown"
+      const email = payout.partner?.email || ""
+
       if (!id) continue
 
       if (!agentMap.has(id)) {
         agentMap.set(id, {
           partner_airtable_id: id,
-          partner_name: payout.partner_name || "Unknown",
-          partner_email: "",
+          partner_name: name,
+          partner_email: email,
           total_payout: 0,
           line_item_count: 0,
           paid_count: 0,

@@ -1,8 +1,13 @@
+// =============================================================================
+// Status Types (must match database ENUMs after migration)
+// =============================================================================
 export type AssignmentStatus = "unassigned" | "pending" | "confirmed"
 export type PaidStatus = "unpaid" | "pending" | "paid"
 export type PayoutType = "residual" | "upfront" | "trueup" | "bonus" | "clawback" | "adjustment"
 export type AdjustmentType = "clawback" | "additional"
-export type PartnerRole = "ISO" | "Agent" | "Sub-Agent" | "Investor" | "Partner" | "Company"
+export type PartnerRole = "ISO" | "Agent" | "Sub-Agent" | "Investor" | "Partner" | "Company" | "Fund I"
+export type SyncStatus = "pending" | "synced" | "failed"
+export type ExternalSource = "airtable" | "manual" | "system"
 export type MerchantStatus = "active" | "inactive" | "suspended"
 export type AccountAssignmentStatus = "available" | "assigned" | "confirmed"
 export type BoardingPlatform = "Nuvei" | "Fiserv" | "Shift4" | "Cardpointe"
@@ -96,7 +101,7 @@ export interface Payout {
   is_legacy_import: boolean
 }
 
-// partner_sync table (Airtable source)
+// partner_sync table (Airtable source - LEGACY)
 export interface PartnerSync {
   id: string
   airtable_record_id: string
@@ -109,6 +114,52 @@ export interface PartnerSync {
   updated_at: string
   is_active: boolean
   notes: string | null
+}
+
+// =============================================================================
+// NEW: Normalized Partners Table
+// =============================================================================
+
+/**
+ * Partner record from the normalized partners table
+ * This is the new source of truth for partner data
+ */
+export interface Partner {
+  id: string // UUID primary key
+  external_id: string | null // Airtable record ID (e.g., "recABC123")
+  external_source: ExternalSource // Where the partner originated
+  name: string
+  email: string | null
+  role: PartnerRole | string
+  is_active: boolean
+  synced_at: string | null
+  sync_status: SyncStatus
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * Deal Participants junction table record
+ * Links deals to partners with split percentages
+ */
+export interface DealParticipantRecord {
+  id: string // UUID primary key
+  deal_id: string // FK to deals.id
+  partner_id: string // FK to partners.id
+  split_pct: number // 0-100
+  role: PartnerRole | string
+  effective_from: string // ISO date - when this split became active
+  effective_to: string | null // NULL = currently active
+  created_at: string
+  created_by: string | null
+}
+
+/**
+ * Extended Payout with partner_id support
+ * Used during migration when both old and new IDs are present
+ */
+export interface PayoutWithPartnerId extends Payout {
+  partner_id: string | null // NEW: FK to partners.id
 }
 
 // Useful computed types

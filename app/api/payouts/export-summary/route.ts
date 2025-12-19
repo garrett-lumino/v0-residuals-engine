@@ -1,14 +1,34 @@
 import { NextResponse } from "next/server"
 import { createServerClient } from "@/lib/db/server"
 
+/**
+ * Payout with joined partner data from partners table
+ */
+interface PayoutWithPartner {
+  payout_month: string | null
+  partner_payout_amount: number | null
+  partner_airtable_id?: string | null
+  partner: {
+    external_id: string | null
+  } | null
+}
+
 export async function GET() {
   try {
     const supabase = await createServerClient()
 
+    // Query with JOIN to partners table
     const { data: payouts, error } = await supabase
       .from("payouts")
-      .select("*")
-      .order("payout_month", { ascending: false })
+      .select(`
+        payout_month,
+        partner_payout_amount,
+        partner_airtable_id,
+        partner:partners!partner_id (
+          external_id
+        )
+      `)
+      .order("payout_month", { ascending: false }) as { data: PayoutWithPartner[] | null; error: any }
 
     if (error) throw error
 
@@ -16,17 +36,19 @@ export async function GET() {
     const summaryMap = new Map()
 
     payouts?.forEach((payout) => {
-      const key = `${payout.partner_airtable_id}_${payout.payout_month}`
+      // Prefer joined partner data, fall back to legacy column
+      const agentId = payout.partner?.external_id || payout.partner_airtable_id
+      const key = `${agentId}_${payout.payout_month}`
       if (!summaryMap.has(key)) {
         summaryMap.set(key, {
-          agent: payout.partner_airtable_id,
+          agent: agentId,
           month: payout.payout_month,
           totalAmount: 0,
           count: 0,
         })
       }
       const entry = summaryMap.get(key)
-      entry.totalAmount += Number.parseFloat(payout.partner_payout_amount) || 0
+      entry.totalAmount += Number.parseFloat(String(payout.partner_payout_amount)) || 0
       entry.count += 1
     })
 

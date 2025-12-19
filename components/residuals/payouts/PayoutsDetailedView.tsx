@@ -205,7 +205,12 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
           setAgentData(data.agents)
           setAgentOffset(data.agents.length)
         } else {
-          setAgentData((prev) => [...prev, ...data.agents])
+          // Deduplicate by partner_airtable_id to prevent React key errors
+          setAgentData((prev) => {
+            const existingIds = new Set(prev.map((a) => a.partner_airtable_id))
+            const newAgents = data.agents.filter((a: AgentSummary) => !existingIds.has(a.partner_airtable_id))
+            return [...prev, ...newAgents]
+          })
           setAgentOffset((prev) => prev + data.agents.length)
         }
         setAgentHasMore(data.agents.length === 50)

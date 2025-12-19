@@ -13,14 +13,14 @@ export interface NormalizedParticipant {
 }
 
 export interface RawParticipant {
-  partner_id?: string
-  partner_airtable_id?: string
-  partner_name?: string
-  name?: string
-  partner_role?: string
-  role?: string
-  split_pct?: number
-  split?: number
+  partner_id?: string | null
+  partner_airtable_id?: string | null
+  partner_name?: string | null
+  name?: string | null
+  partner_role?: string | null
+  role?: string | null
+  split_pct?: number | null
+  split?: number | null
 }
 
 /**

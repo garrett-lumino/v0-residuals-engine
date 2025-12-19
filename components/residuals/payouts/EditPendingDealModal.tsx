@@ -247,7 +247,7 @@ export function EditPendingDealModal({ event, isOpen, onClose, onComplete }: Edi
 
       if (response.ok) {
         toast({
-          title: "Assignment Rejected",
+          title: "Assignment Undone",
           description: "The event has been returned to the unassigned queue",
         })
         onClose()
@@ -255,15 +255,58 @@ export function EditPendingDealModal({ event, isOpen, onClose, onComplete }: Edi
       } else {
         const data = await response.json()
         toast({
-          title: "Rejection Failed",
-          description: data.error || "Failed to reject assignment",
+          title: "Undo Failed",
+          description: data.error || "Failed to undo assignment",
           variant: "destructive",
         })
       }
     } catch (error) {
       toast({
         title: "Error",
-        description: "An error occurred while rejecting. Please try again.",
+        description: "An error occurred while undoing. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  /**
+   * Reset an orphaned event (pending_confirmation without a deal) back to unassigned
+   */
+  const handleResetToUnassigned = async () => {
+    setIsLoading(true)
+    try {
+      const response = await fetch(`/api/unassigned-events/${event.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          assignment_status: "unassigned",
+          deal_id: null,
+          assigned_agent_id: null,
+          assigned_agent_name: null,
+        }),
+      })
+
+      if (response.ok) {
+        toast({
+          title: "Event Reset",
+          description: "The event has been returned to the unassigned queue",
+        })
+        onClose()
+        onComplete()
+      } else {
+        const data = await response.json()
+        toast({
+          title: "Reset Failed",
+          description: data.error || "Failed to reset event",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "An error occurred while resetting. Please try again.",
         variant: "destructive",
       })
     } finally {
@@ -395,7 +438,7 @@ export function EditPendingDealModal({ event, isOpen, onClose, onComplete }: Edi
                     </p>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Please reject this assignment and re-assign from the Unassigned Events tab.
+                    Click "Reset to Unassigned" below to return this event to the unassigned queue.
                   </p>
                 </div>
               </CardContent>
@@ -577,8 +620,6 @@ export function EditPendingDealModal({ event, isOpen, onClose, onComplete }: Edi
           {!dealMissing && (
             <>
               <div className="flex gap-2">
-                {/* REMOVED: Reject button - user requested removal from pending confirmation section
-                   The handleReject function is kept in case it needs to be re-enabled later.
                 <Button
                   variant="outline"
                   onClick={handleReject}
@@ -586,9 +627,8 @@ export function EditPendingDealModal({ event, isOpen, onClose, onComplete }: Edi
                   className="gap-2 border-orange-500 text-orange-600 hover:bg-orange-50 bg-transparent"
                 >
                   <RotateCcw className="h-4 w-4" />
-                  Reject (Back to Unassigned)
+                  Undo Assignment
                 </Button>
-                */}
                 <AlertDialog open={showDeleteConfirm} onOpenChange={setShowDeleteConfirm}>
                   <AlertDialogTrigger asChild>
                     <Button variant="destructive" disabled={isLoading} className="gap-2">
@@ -633,6 +673,22 @@ export function EditPendingDealModal({ event, isOpen, onClose, onComplete }: Edi
                 </Button>
               </div>
             </>
+          )}
+          {dealMissing && (
+            <div className="flex justify-between w-full">
+              <Button
+                variant="outline"
+                onClick={handleResetToUnassigned}
+                disabled={isLoading}
+                className="gap-2 border-orange-500 text-orange-600 hover:bg-orange-50 bg-transparent"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Reset to Unassigned
+              </Button>
+              <Button variant="outline" onClick={onClose} disabled={isLoading}>
+                Close
+              </Button>
+            </div>
           )}
         </DialogFooter>
       </DialogContent>

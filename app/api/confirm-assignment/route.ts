@@ -2,6 +2,9 @@ import { createClient } from "@/lib/db/server"
 import { type NextRequest, NextResponse } from "next/server"
 import { logActionAsync, logDebug, generateRequestId } from "@/lib/utils/history"
 import { normalizeParticipant } from "@/lib/utils/normalize-participant"
+import { FEATURE_FLAGS } from "@/lib/config/feature-flags"
+import { getPartnerIdsByAirtableIds } from "@/lib/services/partner-lookup"
+import { validateAssignmentStatus, validatePaidStatus } from "@/lib/utils/validate-status"
 
 async function syncPayoutsToAirtable(payoutIds: string[]) {
   const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY
@@ -340,7 +343,8 @@ export async function POST(request: NextRequest) {
             mid: event.mid,
             merchant_name: event.merchant_name,
             payout_month: event.payout_month,
-            payout_type: event.payout_type || "residual",
+            // Use event payout_type first, fall back to deal payout_type, then default to "residual"
+            payout_type: event.payout_type || deal.payout_type || "residual",
             volume: event.volume,
             fees: fees,
             adjustments: adjustments,
@@ -360,9 +364,24 @@ export async function POST(request: NextRequest) {
       }
 
       if (payoutRows.length > 0) {
+        // Look up partner_ids if feature is enabled
+        let partnerIdMap = new Map<string, string>()
+        if (FEATURE_FLAGS.WRITE_PARTNER_ID_TO_PAYOUTS) {
+          const airtableIds = payoutRows
+            .map((p) => p.partner_airtable_id)
+            .filter((id): id is string => !!id)
+          partnerIdMap = await getPartnerIdsByAirtableIds(airtableIds)
+        }
+
+        // Add partner_id to each payout row
+        const payoutsWithPartnerId = payoutRows.map((p) => ({
+          ...p,
+          partner_id: partnerIdMap.get(p.partner_airtable_id) || null,
+        }))
+
         const { data: insertedPayouts, error: insertError } = await supabase
           .from("payouts")
-          .insert(payoutRows)
+          .insert(payoutsWithPartnerId)
           .select("id")
 
         if (insertError) {

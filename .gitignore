@@ -3,3 +3,6 @@
 node_modules
 .next/
 tsconfig.tsbuildinfo
+
+# Supabase local runtime (not the migrations)
+.supabase/

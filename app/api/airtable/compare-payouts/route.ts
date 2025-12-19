@@ -5,6 +5,40 @@ const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || "appRygdwVIEtbUI1C"
 const AIRTABLE_TABLE_ID = "tblWZlEw6pM9ytA1x"
 
+/**
+ * Payout with joined partner data from partners table
+ * Uses the new normalized schema where partner info comes from JOIN
+ */
+interface PayoutWithPartner {
+  id: string
+  deal_id: string | null
+  mid: string | null
+  merchant_name: string | null
+  payout_month: string | null
+  payout_date: string | null
+  partner_split_pct: number | null
+  partner_payout_amount: number | null
+  volume: number | null
+  fees: number | null
+  net_residual: number | null
+  payout_type: string | null
+  assignment_status: string | null
+  paid_status: string | null
+  paid_at: string | null
+  is_legacy_import: boolean | null
+  partner_id: string | null
+  // Legacy fields (for backward compatibility during migration)
+  partner_airtable_id?: string | null
+  partner_name?: string | null
+  partner_role?: string | null
+  // Joined partner data from partners table
+  partner: {
+    external_id: string | null
+    name: string
+    role: string
+  } | null
+}
+
 const cleanString = (val: any): string => {
   if (val === null || val === undefined) return ""
   return String(val)
@@ -12,7 +46,16 @@ const cleanString = (val: any): string => {
     .replace(/[\r\n]+/g, " ")
 }
 
-const formatPayoutForAirtable = (payout: any) => {
+/**
+ * Format payout for Airtable comparison
+ * Uses joined partner data when available, falls back to legacy columns
+ */
+const formatPayoutForAirtable = (payout: PayoutWithPartner) => {
+  // Partner data: prefer joined partner table, fall back to legacy columns
+  const partnerId = payout.partner?.external_id || payout.partner_airtable_id || ""
+  const partnerName = payout.partner?.name || payout.partner_name || ""
+  const partnerRole = payout.partner?.role || payout.partner_role || ""
+
   const fields: Record<string, any> = {
     "Payout ID": payout.id,
     "Deal ID": payout.deal_id || "",
@@ -20,9 +63,9 @@ const formatPayoutForAirtable = (payout: any) => {
     "Merchant Name": cleanString(payout.merchant_name),
     "Payout Month": payout.payout_month || "",
     "Payout Date": payout.payout_date || null,
-    "Partner ID": payout.partner_airtable_id || "",
-    "Partner Name": cleanString(payout.partner_name),
-    "Partner Role": cleanString(payout.partner_role),
+    "Partner ID": partnerId,
+    "Partner Name": cleanString(partnerName),
+    "Partner Role": cleanString(partnerRole),
     "Split %": payout.partner_split_pct || 0,
     "Payout Amount": payout.partner_payout_amount || 0,
     Volume: payout.volume || 0,
@@ -85,14 +128,22 @@ export async function POST(request: Request) {
     const supabase = await createServerClient()
 
     // Supabase has a default limit of 1000, so we need to paginate to get ALL payouts
-    const allPayouts: any[] = []
+    // Uses the new normalized schema - partner info comes from JOIN instead of denormalized columns
+    const allPayouts: PayoutWithPartner[] = []
     const PAGE_SIZE = 1000
     let from = 0
 
     while (true) {
       let query = supabase
         .from("payouts")
-        .select("*")
+        .select(`
+          *,
+          partner:partners!partner_id (
+            external_id,
+            name,
+            role
+          )
+        `)
         .order("created_at", { ascending: false })
         .range(from, from + PAGE_SIZE - 1)
 
@@ -100,7 +151,7 @@ export async function POST(request: Request) {
         query = query.eq("payout_month", month)
       }
 
-      const { data: pageData, error } = await query
+      const { data: pageData, error } = await query as { data: PayoutWithPartner[] | null; error: any }
 
       if (error) {
         return NextResponse.json({ error: error.message }, { status: 500 })
@@ -195,13 +246,16 @@ export async function POST(request: Request) {
       const airtableData = formatPayoutForAirtable(payout)
       const existingRecordsList = existingRecords.get(payout.id)
 
+      // Get partner name from joined data or legacy column
+      const partnerName = payout.partner?.name || payout.partner_name || ""
+
       if (!existingRecordsList || existingRecordsList.length === 0) {
         // New record - doesn't exist in Airtable
         newRecords.push({
           payoutId: payout.id,
           mid: payout.mid,
           merchantName: payout.merchant_name,
-          partnerName: payout.partner_name,
+          partnerName,
           payoutMonth: payout.payout_month,
           payoutAmount: payout.partner_payout_amount,
           status: payout.assignment_status,
@@ -233,7 +287,7 @@ export async function POST(request: Request) {
             airtableRecordId: primaryRecord.id,
             mid: payout.mid,
             merchantName: payout.merchant_name,
-            partnerName: payout.partner_name,
+            partnerName,
             payoutMonth: payout.payout_month,
             changes,
             fields: airtableData,

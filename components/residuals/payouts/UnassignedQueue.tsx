@@ -23,7 +23,6 @@ import { MoneyDisplay } from "@/components/residuals/shared/MoneyDisplay"
 import { AssignmentModal } from "@/components/residuals/payouts/AssignmentModal"
 import { EditPendingDealModal } from "@/components/residuals/payouts/EditPendingDealModal"
 import { ConfirmedDealViewer } from "@/components/residuals/payouts/ConfirmedDealViewer"
-import { StatusBadge } from "@/components/residuals/shared/StatusBadge"
 import {
   RefreshCw,
   Trash2,
@@ -37,6 +36,7 @@ import {
   AlertCircle,
   Check,
   Loader2,
+  RotateCcw,
 } from "lucide-react"
 import {
   Dialog,
@@ -64,6 +64,7 @@ interface UnassignedEvent {
   assigned_agent_name?: string
   payout_type?: string
   payout_amount?: number
+  deal_id?: string | null
 }
 
 interface Batch {
@@ -135,13 +136,16 @@ export const UnassignedQueue = forwardRef<UnassignedQueueRef, UnassignedQueuePro
   const [editMid, setEditMid] = useState("")
   const [editMerchantName, setEditMerchantName] = useState("")
   const [isUpdating, setIsUpdating] = useState(false)
-  const [viewingConfirmedEvent, setViewingConfirmedEvent] = useState<UnassignedEvent | null>(null)
 
   const [bulkDeleting, setBulkDeleting] = useState(false)
   const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false)
 
   const [bulkConfirming, setBulkConfirming] = useState(false)
   const [bulkConfirmDialogOpen, setBulkConfirmDialogOpen] = useState(false)
+
+  // State for viewing confirmed deals
+  const [viewerOpen, setViewerOpen] = useState(false)
+  const [eventToView, setEventToView] = useState<UnassignedEvent | null>(null)
 
   useImperativeHandle(ref, () => ({
     refresh: () => {
@@ -355,6 +359,99 @@ export const UnassignedQueue = forwardRef<UnassignedQueueRef, UnassignedQueuePro
         variant: "destructive",
       })
     }
+  }
+
+  /**
+   * Undo assignment - returns event from pending_confirmation back to unassigned
+   */
+  const handleUndoAssignment = async (event: UnassignedEvent) => {
+    try {
+      // First, get the deal_id for this event
+      if (!event.deal_id) {
+        // No deal_id - just reset the event directly
+        const response = await fetch(`/api/unassigned-events/${event.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            assignment_status: "unassigned",
+            deal_id: null,
+            assigned_agent_id: null,
+            assigned_agent_name: null,
+          }),
+        })
+
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(data.error || "Failed to reset event")
+        }
+      } else {
+        // Has a deal_id - use the reject endpoint to properly clean up
+        const response = await fetch(`/api/deals/${event.deal_id}/reject`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ eventId: event.id }),
+        })
+
+        if (!response.ok) {
+          const data = await response.json()
+          throw new Error(data.error || "Failed to undo assignment")
+        }
+      }
+
+      toast({
+        title: "Assignment Undone",
+        description: `${event.merchant_name || event.mid} has been returned to unassigned.`,
+      })
+
+      fetchData()
+      onUploadSuccess?.()
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to undo assignment",
+        variant: "destructive",
+      })
+    }
+  }
+
+  /**
+   * Unconfirm - revert confirmed event back to pending_confirmation
+   */
+  const handleUnconfirm = async (event: UnassignedEvent) => {
+    try {
+      const response = await fetch("/api/unconfirm-assignment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_ids: [event.id] }),
+      })
+
+      if (!response.ok) {
+        const data = await response.json()
+        throw new Error(data.error || "Failed to unconfirm")
+      }
+
+      toast({
+        title: "Confirmation Reverted",
+        description: `${event.merchant_name || event.mid} moved back to pending confirmation.`,
+      })
+
+      fetchData()
+      onUploadSuccess?.()
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to unconfirm",
+        variant: "destructive",
+      })
+    }
+  }
+
+  /**
+   * Open the ConfirmedDealViewer modal for a specific event
+   */
+  const handleViewClick = (event: UnassignedEvent) => {
+    setEventToView(event)
+    setViewerOpen(true)
   }
 
   const handleDeleteClick = (event: UnassignedEvent) => {
@@ -694,7 +791,16 @@ export const UnassignedQueue = forwardRef<UnassignedQueueRef, UnassignedQueuePro
                           Confirm
                         </Button>
                         <Button size="sm" variant="outline" onClick={() => handleAssignClick(event)}>
-                          Edit Participants
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleUndoAssignment(event)}
+                          className="border-orange-500 text-orange-600 hover:bg-orange-50"
+                        >
+                          <RotateCcw className="h-4 w-4 mr-1" />
+                          Undo
                         </Button>
                       </>
                     )}
@@ -703,11 +809,15 @@ export const UnassignedQueue = forwardRef<UnassignedQueueRef, UnassignedQueuePro
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() => setViewingConfirmedEvent(event)}
+                          onClick={() => handleUnconfirm(event)}
+                          className="border-orange-500 text-orange-600 hover:bg-orange-50"
                         >
-                          View Deal
+                          <RotateCcw className="h-4 w-4 mr-1" />
+                          Unconfirm
                         </Button>
-                        <StatusBadge status="confirmed" />
+                        <Button size="sm" variant="outline" onClick={() => handleViewClick(event)}>
+                          View
+                        </Button>
                       </>
                     )}
                     <Button
@@ -912,15 +1022,18 @@ export const UnassignedQueue = forwardRef<UnassignedQueueRef, UnassignedQueuePro
         />
       )}
 
-      {/* Confirmed Deal Viewer */}
-      {activeTab === "confirmed" && (
+      {/* Confirmed Deal Viewer - single event modal */}
+      {eventToView && (
         <ConfirmedDealViewer
-          event={viewingConfirmedEvent}
-          isOpen={!!viewingConfirmedEvent}
-          onClose={() => setViewingConfirmedEvent(null)}
+          event={eventToView}
+          isOpen={viewerOpen}
+          onClose={() => {
+            setViewerOpen(false)
+            setEventToView(null)
+          }}
           onComplete={() => {
-            setViewingConfirmedEvent(null)
             fetchData()
+            onUploadSuccess?.()
           }}
         />
       )}
@@ -930,18 +1043,20 @@ export const UnassignedQueue = forwardRef<UnassignedQueueRef, UnassignedQueuePro
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Event</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this event? This action cannot be undone.
-              {eventToDelete && (
-                <div className="mt-2 p-2 bg-muted rounded text-sm">
-                  <p>
-                    <strong>MID:</strong> {eventToDelete.mid}
-                  </p>
-                  <p>
-                    <strong>Merchant:</strong> {eventToDelete.merchant_name}
-                  </p>
-                </div>
-              )}
+            <AlertDialogDescription asChild>
+              <div>
+                <span>Are you sure you want to delete this event? This action cannot be undone.</span>
+                {eventToDelete && (
+                  <div className="mt-2 p-2 bg-muted rounded text-sm">
+                    <div>
+                      <strong>MID:</strong> {eventToDelete.mid}
+                    </div>
+                    <div>
+                      <strong>Merchant:</strong> {eventToDelete.merchant_name}
+                    </div>
+                  </div>
+                )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

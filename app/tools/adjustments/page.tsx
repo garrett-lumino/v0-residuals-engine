@@ -485,8 +485,23 @@ export default function AdjustmentsPage() {
       .reduce((sum, s) => sum + (s.new_split_pct - s.old_split_pct), 0)
   }
 
+  const calculateTotalSplit = () => {
+    return adjustmentParticipants.reduce((sum, p) => sum + (p.new_split_pct || 0), 0)
+  }
+
   const submitAdjustment = async () => {
     if (!selectedDeal) return
+
+    // Validate total split equals 100%
+    const totalSplit = adjustmentParticipants.reduce((sum, p) => sum + (p.new_split_pct || 0), 0)
+    if (totalSplit !== 100) {
+      toast({
+        title: "Validation Error",
+        description: `Split percentages must total 100% (currently ${totalSplit}%)`,
+        variant: "destructive",
+      })
+      return
+    }
 
     setSubmitting(true)
     try {
@@ -1189,9 +1204,21 @@ export default function AdjustmentsPage() {
             {/* Summary */}
             <div className="rounded-lg border bg-muted/50 p-4">
               <h4 className="mb-2 text-sm font-medium">Adjustment Summary</h4>
-              <div className="grid grid-cols-3 gap-4 text-center">
+              <div className="grid grid-cols-4 gap-4 text-center">
                 <div>
-                  <p className="text-xs text-muted-foreground">Total Adjustment</p>
+                  <p className="text-xs text-muted-foreground">Total Split</p>
+                  <p className={cn(
+                    "text-lg font-semibold",
+                    calculateTotalSplit() === 100 ? "text-green-600" : "text-red-600"
+                  )}>
+                    {calculateTotalSplit()}%
+                    {calculateTotalSplit() !== 100 && (
+                      <span className="block text-xs font-normal">Must be 100%</span>
+                    )}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Net Change</p>
                   <p className="text-lg font-semibold">{calculateTotalAdjustment().toFixed(2)}%</p>
                 </div>
                 <div>
@@ -1380,7 +1407,7 @@ export default function AdjustmentsPage() {
             </Button>
             <Button
               onClick={submitAdjustment}
-              disabled={submitting || !adjustmentParticipants.some((p) => p.new_split_pct !== p.old_split_pct)}
+              disabled={submitting || !adjustmentParticipants.some((p) => p.new_split_pct !== p.old_split_pct) || calculateTotalSplit() !== 100}
             >
               {submitting ? (
                 <>
