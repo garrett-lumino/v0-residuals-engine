@@ -66,9 +66,21 @@ interface AgentSummary {
   partner_name: string
   partner_email: string
   total_payout: number
+  paid_amount: number
+  unpaid_amount: number
   line_item_count: number
   paid_count: number
   unpaid_count: number
+}
+
+interface AgentTotals {
+  totalAmount: number
+  paidAmount: number
+  unpaidAmount: number
+  totalCount: number
+  paidCount: number
+  unpaidCount: number
+  agentCount: number
 }
 
 interface MonthlySummary {
@@ -134,12 +146,16 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
 
   // By Agent State
   const [agentData, setAgentData] = useState<AgentSummary[]>([])
+  const [agentTotals, setAgentTotals] = useState<AgentTotals | null>(null)
   const [agentLoading, setAgentLoading] = useState(false)
   const [agentHasMore, setAgentHasMore] = useState(true)
   const [agentOffset, setAgentOffset] = useState(0)
   const agentObserverTarget = useRef<HTMLDivElement>(null)
   const agentLoadingRef = useRef(false)
   const [selectedAgents, setSelectedAgents] = useState<Set<string>>(new Set())
+
+  // Filtered stats state (for dynamic stats based on filters)
+  const [filteredStats, setFilteredStats] = useState(stats)
 
   // Monthly Summary State
   const [monthlyData, setMonthlyData] = useState<MonthlySummary[]>([])
@@ -181,14 +197,27 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
 
   // Load data when tab changes
   useEffect(() => {
-    if (activeTab === "by-agent" && agentData.length === 0) {
-      fetchAgentData()
+    if (activeTab === "by-agent") {
+      fetchAgentData(true) // Always refetch when switching to by-agent tab
     } else if (activeTab === "monthly" && monthlyData.length === 0) {
       fetchMonthlyData()
     } else if (activeTab === "quarterly" && quarterlyData.length === 0) {
       fetchQuarterlyData()
+    } else if (activeTab === "detailed") {
+      // Reset to original stats when on detailed view with no filters
+      if (monthFilter === "all" && statusFilter === "all") {
+        setFilteredStats(stats)
+      }
     }
   }, [activeTab])
+
+  // Refetch agent data when filters change (only if on by-agent tab)
+  useEffect(() => {
+    if (activeTab === "by-agent") {
+      setSelectedAgents(new Set()) // Clear selections when filters change
+      fetchAgentData(true)
+    }
+  }, [monthFilter, statusFilter, typeFilter, roleFilter, searchQuery])
 
   const fetchAgentData = async (reset = false) => {
     if (agentLoadingRef.current) return
@@ -197,7 +226,37 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
 
     try {
       const offset = reset ? 0 : agentOffset
-      const response = await fetch(`/api/payouts/by-agent?offset=${offset}&limit=50`)
+      const params = new URLSearchParams({
+        offset: offset.toString(),
+        limit: "50",
+      })
+
+      // Add month filter if selected
+      if (monthFilter && monthFilter !== "all") {
+        params.set("month", monthFilter)
+      }
+
+      // Add status filter if selected
+      if (statusFilter && statusFilter !== "all") {
+        params.set("status", statusFilter)
+      }
+
+      // Add type filter if selected
+      if (typeFilter && typeFilter !== "all") {
+        params.set("type", typeFilter)
+      }
+
+      // Add role filter if selected
+      if (roleFilter && roleFilter !== "all") {
+        params.set("role", roleFilter)
+      }
+
+      // Add search filter if provided
+      if (searchQuery && searchQuery.trim()) {
+        params.set("search", searchQuery.trim())
+      }
+
+      const response = await fetch(`/api/payouts/by-agent?${params}`)
       const data = await response.json()
 
       if (data.agents && data.agents.length > 0) {
@@ -215,7 +274,22 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
         }
         setAgentHasMore(data.agents.length === 50)
       } else {
+        if (reset) {
+          setAgentData([])
+        }
         setAgentHasMore(false)
+      }
+
+      // Update totals from API response
+      if (data.totals) {
+        setAgentTotals(data.totals)
+        // Update filtered stats for the stats cards
+        setFilteredStats({
+          totalAmount: data.totals.totalAmount,
+          paidAmount: data.totals.paidAmount,
+          paidCount: data.totals.paidCount,
+          totalCount: data.totals.totalCount,
+        })
       }
     } catch (error) {
       console.error("[v0] Error fetching agent data:", error)
@@ -255,39 +329,25 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
     }
   }
 
+  // Update filtered payouts and stats when payouts change (server-side filtering is now applied)
   useEffect(() => {
-    let filtered = [...payouts]
+    // Since filtering is now done server-side, just use payouts directly
+    setFilteredPayouts(payouts)
 
-    if (searchQuery) {
-      const query = searchQuery.toLowerCase()
-      filtered = filtered.filter(
-        (p) =>
-          p.merchant_name?.toLowerCase().includes(query) ||
-          p.partner_name?.toLowerCase().includes(query) ||
-          p.partner_airtable_id?.toLowerCase().includes(query) ||
-          p.mid?.toLowerCase().includes(query) ||
-          p.deal_id?.toLowerCase().includes(query),
-      )
+    // Update filtered stats for the detailed view
+    if (activeTab === "detailed") {
+      const totalAmount = payouts.reduce((sum, p) => sum + (Number.parseFloat(p.partner_payout_amount) || 0), 0)
+      const paidPayouts = payouts.filter((p) => p.paid_status === "paid")
+      const paidAmount = paidPayouts.reduce((sum, p) => sum + (Number.parseFloat(p.partner_payout_amount) || 0), 0)
+
+      setFilteredStats({
+        totalAmount,
+        paidAmount,
+        paidCount: paidPayouts.length,
+        totalCount: payouts.length,
+      })
     }
-
-    if (monthFilter !== "all") {
-      filtered = filtered.filter((p) => p.payout_month === monthFilter)
-    }
-
-    if (statusFilter !== "all") {
-      filtered = filtered.filter((p) => p.paid_status === statusFilter)
-    }
-
-    if (typeFilter !== "all") {
-      filtered = filtered.filter((p) => p.payout_type === typeFilter)
-    }
-
-    if (roleFilter !== "all") {
-      filtered = filtered.filter((p) => p.partner_role === roleFilter)
-    }
-
-    setFilteredPayouts(filtered)
-  }, [searchQuery, monthFilter, statusFilter, typeFilter, roleFilter, payouts])
+  }, [payouts, activeTab])
 
   const sortedPayouts = [...filteredPayouts].sort((a, b) => {
     let aVal: any = a[sortField]
@@ -351,9 +411,24 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
     </th>
   )
 
+  // Build query params for API calls
+  const buildQueryParams = useCallback((offset: number, limit: number) => {
+    const params = new URLSearchParams({
+      offset: offset.toString(),
+      limit: limit.toString(),
+    })
+    if (monthFilter && monthFilter !== "all") params.set("month", monthFilter)
+    if (statusFilter && statusFilter !== "all") params.set("status", statusFilter)
+    if (typeFilter && typeFilter !== "all") params.set("type", typeFilter)
+    if (roleFilter && roleFilter !== "all") params.set("role", roleFilter)
+    if (searchQuery && searchQuery.trim()) params.set("search", searchQuery.trim())
+    return params.toString()
+  }, [monthFilter, statusFilter, typeFilter, roleFilter, searchQuery])
+
   const refreshPayouts = useCallback(async () => {
     try {
-      const response = await fetch(`/api/payouts/list?offset=0&limit=${payoutsLengthRef.current || 50}`)
+      const queryParams = buildQueryParams(0, payoutsLengthRef.current || 50)
+      const response = await fetch(`/api/payouts/list?${queryParams}`)
       const data = await response.json()
       if (data.payouts) {
         setPayouts(data.payouts)
@@ -361,7 +436,7 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
     } catch (error) {
       console.error("[v0] Error refreshing payouts:", error)
     }
-  }, [])
+  }, [buildQueryParams])
 
   const loadMore = useCallback(async () => {
     if (loadingRef.current) return
@@ -369,7 +444,8 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
     loadingRef.current = true
     setLoading(true)
     try {
-      const response = await fetch(`/api/payouts/list?offset=${payoutsLengthRef.current}&limit=50`)
+      const queryParams = buildQueryParams(payoutsLengthRef.current, 50)
+      const response = await fetch(`/api/payouts/list?${queryParams}`)
       const data = await response.json()
 
       if (data.payouts && data.payouts.length > 0) {
@@ -389,7 +465,31 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
       loadingRef.current = false
       setLoading(false)
     }
-  }, [total])
+  }, [total, buildQueryParams])
+
+  // Refetch payouts when filters change on the detailed tab
+  useEffect(() => {
+    if (activeTab !== "detailed") return
+
+    const fetchFilteredPayouts = async () => {
+      setLoading(true)
+      try {
+        const queryParams = buildQueryParams(0, 50)
+        const response = await fetch(`/api/payouts/list?${queryParams}`)
+        const data = await response.json()
+        if (data.payouts) {
+          setPayouts(data.payouts)
+          setHasMore(data.payouts.length === 50)
+        }
+      } catch (error) {
+        console.error("[v0] Error fetching filtered payouts:", error)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchFilteredPayouts()
+  }, [monthFilter, statusFilter, typeFilter, roleFilter, searchQuery, activeTab, buildQueryParams])
 
   useEffect(() => {
     const target = observerTarget.current
@@ -473,10 +573,14 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
     }
   }
 
-  const handleMassPayoutClick = () => {
+  const handleMassPayoutClick = (action: "paid" | "unpaid" = "paid") => {
     if (selectedAgents.size === 0) return
+    setMassPayoutAction(action)
     setMassPaidDialogOpen(true)
   }
+
+  // Track which action we're doing (paid or unpaid)
+  const [massPayoutAction, setMassPayoutAction] = useState<"paid" | "unpaid">("paid")
 
   const handleConfirmMassPaid = async () => {
     setMassMarkingPaid(true)
@@ -486,13 +590,19 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           partnerIds: Array.from(selectedAgents),
+          month: monthFilter, // Pass the selected month filter
+          action: massPayoutAction, // Pass the action (paid/unpaid)
         }),
       })
 
-      if (res.ok) {
+      const data = await res.json()
+
+      if (res.ok && data.success) {
         // Refresh agent data
         fetchAgentData(true)
         setSelectedAgents(new Set())
+      } else {
+        console.error("Mass payout failed:", data.error)
       }
     } catch (error) {
       console.error("Error mass marking as paid:", error)
@@ -531,10 +641,16 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
         </div>
         <div className="flex gap-2">
           {activeTab === "by-agent" && selectedAgents.size > 0 && (
-            <Button onClick={handleMassPayoutClick}>
-              <Layers className="mr-2 h-4 w-4" />
-              Mass Payout ({selectedAgents.size})
-            </Button>
+            <>
+              <Button onClick={() => handleMassPayoutClick("paid")} className="bg-green-600 hover:bg-green-700">
+                <Check className="mr-2 h-4 w-4" />
+                Mark Paid ({selectedAgents.size})
+              </Button>
+              <Button onClick={() => handleMassPayoutClick("unpaid")} variant="outline" className="text-amber-600 border-amber-300 hover:bg-amber-50">
+                <DollarSign className="mr-2 h-4 w-4" />
+                Mark Unpaid ({selectedAgents.size})
+              </Button>
+            </>
           )}
           <Link href="/residuals/payouts">
             <Button variant="outline">Back to Overview</Button>
@@ -550,9 +666,11 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">
-              <MoneyDisplay amount={stats.totalAmount} />
+              <MoneyDisplay amount={filteredStats.totalAmount} />
             </div>
-            <p className="text-xs text-muted-foreground">{stats.totalCount} total records</p>
+            <p className="text-xs text-muted-foreground">
+              {filteredStats.totalCount} {monthFilter !== "all" ? `records for ${formatPayoutMonth(monthFilter)}` : "total records"}
+            </p>
           </CardContent>
         </Card>
 
@@ -562,7 +680,7 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
             <FileText className="h-4 w-4 text-muted-foreground" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.totalCount - stats.paidCount}</div>
+            <div className="text-2xl font-bold">{filteredStats.totalCount - filteredStats.paidCount}</div>
             <p className="text-xs text-muted-foreground">Awaiting payment</p>
           </CardContent>
         </Card>
@@ -573,7 +691,7 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
             <CheckCircle2 className="h-4 w-4 text-green-600" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold">{stats.paidCount}</div>
+            <div className="text-2xl font-bold">{filteredStats.paidCount}</div>
             <p className="text-xs text-muted-foreground">Paid out</p>
           </CardContent>
         </Card>
@@ -585,9 +703,9 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-600">
-              <MoneyDisplay amount={stats.paidAmount} />
+              <MoneyDisplay amount={filteredStats.paidAmount} />
             </div>
-            <p className="text-xs text-muted-foreground">From {stats.paidCount} payments</p>
+            <p className="text-xs text-muted-foreground">From {filteredStats.paidCount} payments</p>
           </CardContent>
         </Card>
       </div>
@@ -819,50 +937,85 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
                       </th>
                       <th className="text-left p-3 text-sm font-medium">Partner</th>
                       <th className="text-left p-3 text-sm font-medium">Email</th>
-                      <th className="text-left p-3 text-sm font-medium">Total Payout (All Time)</th>
+                      <th className="text-left p-3 text-sm font-medium">
+                        Total Payout {monthFilter !== "all" ? `(${formatPayoutMonth(monthFilter)})` : "(All Time)"}
+                      </th>
                       <th className="text-left p-3 text-sm font-medium"># of Line Items</th>
+                      {monthFilter !== "all" && (
+                        <th className="text-center p-3 text-sm font-medium">Status</th>
+                      )}
                       <th className="text-center p-3 text-sm font-medium">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
                     {agentLoading && agentData.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="p-12 text-center">
+                        <td colSpan={monthFilter !== "all" ? 7 : 6} className="p-12 text-center">
                           <Loader2 className="h-8 w-8 animate-spin mx-auto text-muted-foreground" />
                         </td>
                       </tr>
                     ) : agentData.length === 0 ? (
                       <tr>
-                        <td colSpan={6} className="p-12 text-center text-muted-foreground">
+                        <td colSpan={monthFilter !== "all" ? 7 : 6} className="p-12 text-center text-muted-foreground">
                           <Users className="h-12 w-12 mx-auto mb-4 opacity-20" />
-                          <p>No agent data found</p>
+                          <p>No agent data found{monthFilter !== "all" ? ` for ${formatPayoutMonth(monthFilter)}` : ""}</p>
                         </td>
                       </tr>
                     ) : (
-                      agentData.map((agent) => (
-                        <tr key={agent.partner_airtable_id} className="border-b hover:bg-muted/20">
-                          <td className="p-3">
-                            <Checkbox
-                              checked={selectedAgents.has(agent.partner_airtable_id)}
-                              onCheckedChange={() => toggleAgentSelection(agent.partner_airtable_id)}
-                            />
-                          </td>
-                          <td className="p-3 text-sm font-medium">{agent.partner_name || "Unknown"}</td>
-                          <td className="p-3 text-sm text-muted-foreground">{agent.partner_email || "-"}</td>
-                          <td className="p-3 text-sm font-medium">
-                            <MoneyDisplay amount={agent.total_payout} />
-                          </td>
-                          <td className="p-3 text-sm">{agent.line_item_count}</td>
-                          <td className="p-3 text-center">
-                            <Link href={`/residuals/payouts/by-participant?partner=${agent.partner_airtable_id}`}>
-                              <Button variant="ghost" size="sm">
-                                <Eye className="h-4 w-4 mr-1" />
-                                View
-                              </Button>
-                            </Link>
-                          </td>
-                        </tr>
-                      ))
+                      agentData.map((agent) => {
+                        // Determine status based on paid/unpaid counts for the selected month
+                        const isPaid = agent.unpaid_count === 0 && agent.paid_count > 0
+
+                        return (
+                          <tr key={agent.partner_airtable_id} className="border-b hover:bg-muted/20">
+                            <td className="p-3">
+                              <Checkbox
+                                checked={selectedAgents.has(agent.partner_airtable_id)}
+                                onCheckedChange={() => toggleAgentSelection(agent.partner_airtable_id)}
+                              />
+                            </td>
+                            <td className="p-3 text-sm font-medium">{agent.partner_name || "Unknown"}</td>
+                            <td className="p-3 text-sm text-muted-foreground">{agent.partner_email || "-"}</td>
+                            <td className="p-3 text-sm font-medium">
+                              <MoneyDisplay amount={agent.total_payout} />
+                            </td>
+                            <td className="p-3 text-sm">{agent.line_item_count}</td>
+                            {monthFilter !== "all" && (
+                              <td className="p-3 text-center">
+                                {isPaid ? (
+                                  <div className="inline-flex items-center gap-1.5 text-green-600">
+                                    <div className="h-6 w-6 rounded-full bg-green-100 flex items-center justify-center">
+                                      <Check className="h-4 w-4" />
+                                    </div>
+                                    <span className="text-sm font-medium">Paid</span>
+                                  </div>
+                                ) : (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => {
+                                      setSelectedAgents(new Set([agent.partner_airtable_id]))
+                                      handleMassPayoutClick("paid")
+                                    }}
+                                    className="text-amber-600 border-amber-300 hover:bg-amber-50 hover:text-amber-700"
+                                  >
+                                    <DollarSign className="h-4 w-4 mr-1" />
+                                    Mark Paid
+                                  </Button>
+                                )}
+                              </td>
+                            )}
+                            <td className="p-3 text-center">
+                              <Link href={`/residuals/payouts/by-participant?partner=${agent.partner_airtable_id}`}>
+                                <Button variant="ghost" size="sm">
+                                  <Eye className="h-4 w-4 mr-1" />
+                                  View
+                                </Button>
+                              </Link>
+                            </td>
+                          </tr>
+                        )
+                      })
                     )}
                   </tbody>
                 </table>
@@ -1025,17 +1178,47 @@ export function PayoutsDetailedView({ initialPayouts, total, stats }: Props) {
       <AlertDialog open={massPaidDialogOpen} onOpenChange={setMassPaidDialogOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Mass Mark as Paid?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to mark all payouts for {selectedAgents.size} selected agent(s) as paid? This will
-              update all their unpaid payout records.
+            <AlertDialogTitle>
+              Mass Mark as {massPayoutAction === "paid" ? "Paid" : "Unpaid"}?
+            </AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>
+                  Are you sure you want to mark {massPayoutAction === "paid" ? "unpaid" : "paid"} payouts for{" "}
+                  <strong>{selectedAgents.size} selected agent(s)</strong> as{" "}
+                  <strong className={massPayoutAction === "paid" ? "text-green-600" : "text-amber-600"}>
+                    {massPayoutAction}
+                  </strong>?
+                </p>
+                <div className="bg-muted p-3 rounded-md text-sm">
+                  <p>
+                    <strong>Month:</strong>{" "}
+                    {monthFilter !== "all" ? formatPayoutMonth(monthFilter) : "All Months"}
+                  </p>
+                  <p>
+                    <strong>Action:</strong>{" "}
+                    {massPayoutAction === "paid"
+                      ? "Mark all unpaid payouts as PAID"
+                      : "Mark all paid payouts as UNPAID"}
+                  </p>
+                </div>
+                {monthFilter === "all" && (
+                  <p className="text-amber-600 text-sm">
+                    ⚠️ Warning: No month filter selected. This will affect ALL months.
+                  </p>
+                )}
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={massMarkingPaid}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmMassPaid} disabled={massMarkingPaid}>
+            <AlertDialogAction
+              onClick={handleConfirmMassPaid}
+              disabled={massMarkingPaid}
+              className={massPayoutAction === "paid" ? "bg-green-600 hover:bg-green-700" : "bg-amber-600 hover:bg-amber-700"}
+            >
               {massMarkingPaid ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-              Confirm Mass Payout
+              Confirm Mark as {massPayoutAction === "paid" ? "Paid" : "Unpaid"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
