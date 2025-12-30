@@ -81,31 +81,32 @@ export async function GET(request: Request) {
 
     // Format for Airtable: one row per partner payout
     // Uses joined partner data when available, falls back to legacy columns
+    // Field names use camelCase to match new residuals_payouts Airtable table
     const airtableRows = allPayouts.map((payout) => {
       const partnerId = payout.partner?.external_id || payout.partner_airtable_id || ""
       const partnerName = payout.partner?.name || payout.partner_name || ""
       const partnerRole = payout.partner?.role || payout.partner_role || ""
 
       return {
-        "Payout ID": payout.id,
-        "Deal ID": payout.deal_id,
-        MID: payout.mid,
-        "Merchant Name": payout.merchant_name,
-        "Payout Month": payout.payout_month,
-        "Payout Date": payout.payout_date,
-        "Partner ID": partnerId,
-        "Partner Name": partnerName,
-        "Partner Role": partnerRole,
-        "Split %": payout.partner_split_pct,
-        "Payout Amount": payout.partner_payout_amount,
-        Volume: payout.volume,
-        Fees: payout.fees,
-        "Net Residual": payout.net_residual,
-        "Payout Type": payout.payout_type,
-        Status: payout.assignment_status,
-        "Paid Status": payout.paid_status,
-        "Paid At": payout.paid_at,
-        "Is Legacy": payout.is_legacy_import ? "Yes" : "No",
+        payoutId: payout.id,
+        dealId: payout.deal_id,
+        mid: payout.mid,
+        merchantName: payout.merchant_name,
+        payoutMonth: payout.payout_month,
+        payoutDate: payout.payout_date,
+        partnerId: partnerId,
+        partnerName: partnerName,
+        partnerRole: partnerRole,
+        partnerSplitPct: payout.partner_split_pct,
+        partnerPayoutAmount: payout.partner_payout_amount,
+        volume: payout.volume,
+        fees: payout.fees,
+        netResidual: payout.net_residual,
+        payoutType: payout.payout_type,
+        status: payout.assignment_status,
+        paidStatus: payout.paid_status,
+        paidAt: payout.paid_at,
+        isLegacy: payout.is_legacy_import ? "Yes" : "No",
       }
     })
 
