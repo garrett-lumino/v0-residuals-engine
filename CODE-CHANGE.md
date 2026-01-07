@@ -1,6 +1,23 @@
 # Code Change Log
 
 
+## 2026-01-07 (Add Lumino Logo to Sidebar)
+
+### Files Changed
+- `components/layout/Sidebar.tsx`
+
+### Summary
+Added Lumino logo image above the "Residuals Engine" title in the sidebar.
+
+### Details
+- Added `next/image` import for optimized image loading
+- Added `lumino_logo_1x.png` logo (120x40px) above the title
+- Wrapped logo and title in a flex column with center alignment
+- Used `priority` prop for immediate logo loading
+- Logo and title have 2-unit gap between them
+
+---
+
 ## 2026-01-07 (Confirmed Badge Shows Confirmation Timestamp)
 
 ### Files Changed
@@ -40,12 +57,12 @@ Enhanced "Confirmed" status badges in adjustment history to display the confirma
    - Hover shows full date/time
 
 **Visual Design:**
-- Confirmation time uses `text-[10px]` for subtle, compact display
+- Confirmation time and date displayed in stacked format next to badge
+- Time on top (e.g., "2:34 PM"), date below (e.g., "01/07/2026")
+- Uses `text-[10px]` and `leading-tight` for compact display
 - Uses `text-muted-foreground` for secondary styling
 - Doesn't affect Pending badges (only confirmed adjustments)
-- Falls back gracefully if `confirmed_at` is missing (for previously confirmed adjustments)
-
-**Note:** Previously confirmed adjustments won't show the timestamp since `confirmed_at` wasn't stored before this change. Only newly confirmed adjustments will display the time.
+- Falls back to `created_at` for legacy records (pre-pending workflow) where `confirmed_at` wasn't stored
 
 ---
 
