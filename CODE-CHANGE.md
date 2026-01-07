@@ -1,5 +1,51 @@
 # Code Change Log
 
+
+## 2026-01-07 (Post-Payout Adjustments Table UI Improvements)
+
+### Files Changed
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Enhanced the deals table in the "Create" tab with better context for deal identification: added Payout Date column and replaced participant count with actual names.
+
+### Details
+**Changes Made:**
+
+1. **Added `effective_date` to Deal interface** (line 68)
+   - Added optional `effective_date?: string | null` field to support payout date display
+
+2. **Added Payout Date Column** (lines 1640-1648, 1716-1725)
+   - Changed grid from 6 columns to 7 columns (`grid-cols-7`)
+   - New column positioned between MID and Payout Type
+   - Formatted using `toLocaleDateString` with "short" month format (e.g., "Jan 7, 2026")
+   - Shows "-" when no effective_date is set
+
+3. **Replaced Participant Count with Names** (lines 1731-1748)
+   - Changed from showing "3 participants" to showing actual names like "John Doe, Jane Smith, Company"
+   - Only shows active participants (those with `split_pct > 0`)
+   - Extracts names from `partner_name` or `name` fields (handles legacy data)
+   - Falls back to "Unknown" when no name is available
+
+4. **Implemented Text Overflow Handling**
+   - Added `truncate` class to participant names column for ellipsis on overflow
+   - Added `title` attribute with full participant list for hover tooltip
+   - Used `text-xs` for smaller text size in constrained columns
+   - Added `min-w-0` and `flex-shrink-0` classes to prevent layout issues
+
+5. **Responsive Design Improvements**
+   - Changed grid gap from `gap-4` to `gap-2` for tighter spacing with 7 columns
+   - Added `truncate` class to Deal ID, Merchant, and MID columns
+   - Compact button padding with `px-2` for Actions column
+   - All columns now handle viewport collapse gracefully
+
+**Technical Notes:**
+- Participant names are extracted at render time using an IIFE (Immediately Invoked Function Expression)
+- The same participant name list is used for both display and tooltip to ensure consistency
+- Date formatting follows existing codebase patterns from DealsManagement.tsx
+
+---
+
 ## 2026-01-07 (Fix Adjustment History Dollar Amount Display)
 
 ### Files Changed

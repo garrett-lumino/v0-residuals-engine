@@ -66,6 +66,7 @@ interface Deal {
   mid: string
   merchant_name: string | null
   payout_type: string
+  created_at: string // When the deal was created
   participants_json: Array<{
     partner_airtable_id: string | null
     partner_name: string | null
@@ -80,7 +81,6 @@ interface Deal {
   }>
   is_pending?: boolean
   pending_event_ids?: string[]
-  created_at?: string
   updated_at?: string
 }
 
@@ -1636,13 +1636,15 @@ export default function AdjustmentsPage() {
               </div>
 
               <div className="rounded-lg border">
-                <div className="grid grid-cols-6 gap-4 border-b bg-muted/50 px-4 py-3 text-sm font-medium">
-                  <div>Deal ID</div>
-                  <div>Merchant</div>
-                  <div>MID</div>
-                  <div>Payout Type</div>
-                  <div>Participants</div>
-                  <div>Actions</div>
+                {/* Header Row */}
+                <div className="flex border-b bg-muted/50 px-4 py-3 text-sm font-medium">
+                  <div className="w-[14%] min-w-0">Deal ID</div>
+                  <div className="w-[14%] min-w-0">Merchant</div>
+                  <div className="w-[12%] min-w-0">MID</div>
+                  <div className="w-[8%] min-w-0">Date</div>
+                  <div className="w-[8%] min-w-0">Type</div>
+                  <div className="w-[26%] min-w-0">Participants</div>
+                  <div className="w-[18%] min-w-0">Actions</div>
                 </div>
 
                 {loading ? (
@@ -1679,28 +1681,20 @@ export default function AdjustmentsPage() {
                       >
                         <div className="border-b last:border-0">
                           {/* Main Deal Row */}
-                          <div className="grid grid-cols-6 gap-4 px-4 py-3 text-sm">
+                          <div className="flex px-4 py-3 text-sm">
+                            {/* Deal ID - 14% */}
                             <CollapsibleTrigger asChild>
-                              <div className="flex items-center gap-2 cursor-pointer hover:text-primary">
+                              <div className="w-[14%] min-w-0 flex items-center gap-2 cursor-pointer hover:text-primary">
                                 {isExpanded ? (
                                   <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
                                 ) : (
                                   <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
                                 )}
-                                <span className="font-mono text-xs">{deal.deal_id}</span>
-                                {deal.is_pending && (
-                                  <Badge
-                                    variant="outline"
-                                    className="bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 text-xs"
-                                  >
-                                    <Clock className="mr-1 h-3 w-3" />
-                                    Pending
-                                  </Badge>
-                                )}
+                                <span className="font-mono text-xs truncate">{deal.deal_id}</span>
                                 {pendingCount > 0 && (
                                   <Badge
                                     variant="outline"
-                                    className="text-xs gap-1 bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
+                                    className="text-xs gap-1 bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300 flex-shrink-0"
                                     title={`${pendingCount} pending adjustment${pendingCount !== 1 ? "s" : ""}`}
                                   >
                                     <Clock className="h-3 w-3" />
@@ -1709,22 +1703,57 @@ export default function AdjustmentsPage() {
                                 )}
                               </div>
                             </CollapsibleTrigger>
-                            <div>{deal.merchant_name || "Unknown"}</div>
-                            <div className="font-mono text-xs">{deal.mid}</div>
-                            <div>
-                              <Badge variant="outline" className="capitalize">
+                            {/* Merchant - 14% */}
+                            <div className="w-[14%] min-w-0 truncate">{deal.merchant_name || "Unknown"}</div>
+                            {/* MID - 12% */}
+                            <div className="w-[12%] min-w-0 font-mono text-xs truncate">{deal.mid}</div>
+                            {/* Date - 8% */}
+                            <div className="w-[8%] min-w-0 text-xs text-muted-foreground whitespace-nowrap">
+                              {new Date(deal.created_at).toLocaleDateString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                                year: "numeric",
+                              })}
+                            </div>
+                            {/* Type - 8% */}
+                            <div className="w-[8%] min-w-0">
+                              <Badge variant="outline" className="capitalize text-xs">
                                 {deal.payout_type || "residual"}
                               </Badge>
                             </div>
-                            <div>{(deal.participants_json || []).filter((p) => p.split_pct > 0).length} participants</div>
-                            <div className="flex items-center gap-2">
-                              <Button size="sm" onClick={() => openAdjustmentDialog(deal)}>
+                            {/* Participants - 26% */}
+                            <div
+                              className="w-[26%] min-w-0 text-xs text-muted-foreground"
+                              title={
+                                (deal.participants_json || [])
+                                  .filter((p) => p.split_pct > 0)
+                                  .map((p) => p.partner_name || p.name || "Unknown")
+                                  .join(", ")
+                              }
+                            >
+                              {(() => {
+                                const activeParticipants = (deal.participants_json || []).filter((p) => p.split_pct > 0)
+                                if (activeParticipants.length === 0) return "-"
+                                const names = activeParticipants.map((p) => p.partner_name || p.name || "Unknown")
+                                const row1 = names.slice(0, 2).join(", ")
+                                const row2 = names.slice(2).join(", ")
+                                return (
+                                  <div className="flex flex-col leading-tight">
+                                    <span className="truncate">{row1}</span>
+                                    {row2 && <span className="truncate text-muted-foreground/70">{row2}</span>}
+                                  </div>
+                                )
+                              })()}
+                            </div>
+                            {/* Actions - 18% */}
+                            <div className="w-[18%] min-w-0 flex items-center gap-1">
+                              <Button size="sm" onClick={() => openAdjustmentDialog(deal)} className="text-xs px-2">
                                 Create Adjustment
                               </Button>
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                className="text-destructive hover:text-destructive hover:bg-destructive/10 px-2"
                                 onClick={() => openDeleteDialog(deal)}
                               >
                                 <Trash2 className="h-4 w-4" />
