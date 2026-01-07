@@ -47,7 +47,11 @@ import {
   Eye,
   ChevronDown,
   ChevronRight,
+  RotateCcw,
+  CheckCircle2,
 } from "lucide-react"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
 import { MoneyDisplay } from "@/components/residuals/shared/MoneyDisplay"
@@ -223,6 +227,19 @@ export default function AdjustmentsPage() {
 
   // Adjustment summary for badges (lightweight counts per deal)
   const [adjustmentSummary, setAdjustmentSummary] = useState<Record<string, { total: number; pending: number }>>({})
+
+  // Pending tab state
+  const [pendingSearch, setPendingSearch] = useState("")
+  const [selectedPendingAdjustments, setSelectedPendingAdjustments] = useState<Set<string>>(new Set())
+  const [confirmDialogOpen, setConfirmDialogOpen] = useState(false)
+  const [rejectDialogOpen, setRejectDialogOpen] = useState(false)
+  const [adjustmentToConfirm, setAdjustmentToConfirm] = useState<AdjustmentGroup | null>(null)
+  const [adjustmentToReject, setAdjustmentToReject] = useState<AdjustmentGroup | null>(null)
+  const [confirming, setConfirming] = useState(false)
+  const [rejecting, setRejecting] = useState(false)
+  const [bulkConfirmDialogOpen, setBulkConfirmDialogOpen] = useState(false)
+  const [bulkRejectDialogOpen, setBulkRejectDialogOpen] = useState(false)
+  const [rejectReason, setRejectReason] = useState("")
 
   // Toggle deal expansion and fetch history if needed
   const toggleDealExpanded = useCallback(async (dealId: string) => {
@@ -407,6 +424,36 @@ export default function AdjustmentsPage() {
     const combined: (AdjustmentGroup | HistoryItem)[] = [...merges, ...adjustmentGroups]
     return combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
   }, [adjustmentHistory])
+
+  // Pending adjustment groups filtered from groupedAdjustmentHistory
+  const pendingAdjustmentGroups = useMemo((): (AdjustmentGroup & { deal_id?: string })[] => {
+    return groupedAdjustmentHistory
+      .filter((item): item is AdjustmentGroup & { deal_id?: string } =>
+        !("type" in item) && item.status === "pending"
+      )
+      .filter((group) => {
+        if (!pendingSearch) return true
+        const searchLower = pendingSearch.toLowerCase()
+        return (
+          group.note?.toLowerCase().includes(searchLower) ||
+          group.participants.some(p =>
+            p.participant_name?.toLowerCase().includes(searchLower) ||
+            p.deal_id?.toLowerCase().includes(searchLower)
+          )
+        )
+      })
+  }, [groupedAdjustmentHistory, pendingSearch])
+
+  // Calculate pending count for tab badge
+  // Uses summary data (loaded on mount) as fallback when history hasn't loaded yet
+  const pendingCount = useMemo(() => {
+    // If history is loaded, use the actual grouped data
+    if (pendingAdjustmentGroups.length > 0) {
+      return pendingAdjustmentGroups.length
+    }
+    // Otherwise, sum up pending counts from the summary (loaded on page mount)
+    return Object.values(adjustmentSummary).reduce((sum, s) => sum + (s.pending || 0), 0)
+  }, [pendingAdjustmentGroups, adjustmentSummary])
 
   const fetchDeals = useCallback(async () => {
     setLoading(true)
@@ -967,6 +1014,197 @@ export default function AdjustmentsPage() {
     }).format(amount)
   }
 
+  // Confirm a single pending adjustment group
+  const handleConfirmAdjustment = async (group: AdjustmentGroup) => {
+    setConfirming(true)
+    try {
+      const adjustmentIds = group.participants.map((p) => p.id)
+      const res = await fetch("/api/adjustments/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adjustment_ids: adjustmentIds }),
+      })
+      const data = await res.json()
+
+      if (res.ok && data.success) {
+        toast({
+          title: "Adjustment Confirmed",
+          description: `Successfully confirmed ${data.confirmed} adjustment(s)`,
+        })
+        fetchHistory(true)
+        fetchAdjustmentSummary()
+      } else {
+        toast({
+          title: "Confirmation Failed",
+          description: data.error || "Failed to confirm adjustment",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "An error occurred while confirming",
+        variant: "destructive",
+      })
+    } finally {
+      setConfirming(false)
+      setConfirmDialogOpen(false)
+      setAdjustmentToConfirm(null)
+    }
+  }
+
+  // Reject a single pending adjustment group
+  const handleRejectAdjustment = async (group: AdjustmentGroup) => {
+    setRejecting(true)
+    try {
+      const adjustmentIds = group.participants.map((p) => p.id)
+      const res = await fetch("/api/adjustments/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adjustment_ids: adjustmentIds, reason: rejectReason }),
+      })
+      const data = await res.json()
+
+      if (res.ok && data.success) {
+        toast({
+          title: "Adjustment Rejected",
+          description: `Successfully rejected ${data.rejected} adjustment(s)`,
+        })
+        fetchHistory(true)
+        fetchAdjustmentSummary()
+      } else {
+        toast({
+          title: "Rejection Failed",
+          description: data.error || "Failed to reject adjustment",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "An error occurred while rejecting",
+        variant: "destructive",
+      })
+    } finally {
+      setRejecting(false)
+      setRejectDialogOpen(false)
+      setAdjustmentToReject(null)
+      setRejectReason("")
+    }
+  }
+
+  // Bulk confirm selected pending adjustments
+  const handleBulkConfirm = async () => {
+    if (selectedPendingAdjustments.size === 0) return
+    setConfirming(true)
+    try {
+      // Get all participant IDs from selected groups
+      const selectedGroups = pendingAdjustmentGroups.filter((g) =>
+        selectedPendingAdjustments.has(g.id)
+      )
+      const allIds = selectedGroups.flatMap((g) => g.participants.map((p) => p.id))
+
+      const res = await fetch("/api/adjustments/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adjustment_ids: allIds }),
+      })
+      const data = await res.json()
+
+      if (res.ok && data.success) {
+        toast({
+          title: "Adjustments Confirmed",
+          description: `Successfully confirmed ${data.confirmed} adjustment(s)`,
+        })
+        setSelectedPendingAdjustments(new Set())
+        fetchHistory(true)
+        fetchAdjustmentSummary()
+      } else {
+        toast({
+          title: "Confirmation Failed",
+          description: data.error || "Failed to confirm adjustments",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to confirm adjustments",
+        variant: "destructive",
+      })
+    } finally {
+      setConfirming(false)
+      setBulkConfirmDialogOpen(false)
+    }
+  }
+
+  // Bulk reject selected pending adjustments
+  const handleBulkReject = async () => {
+    if (selectedPendingAdjustments.size === 0) return
+    setRejecting(true)
+    try {
+      const selectedGroups = pendingAdjustmentGroups.filter((g) =>
+        selectedPendingAdjustments.has(g.id)
+      )
+      const allIds = selectedGroups.flatMap((g) => g.participants.map((p) => p.id))
+
+      const res = await fetch("/api/adjustments/reject", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ adjustment_ids: allIds, reason: rejectReason }),
+      })
+      const data = await res.json()
+
+      if (res.ok && data.success) {
+        toast({
+          title: "Adjustments Rejected",
+          description: `Successfully rejected ${data.rejected} adjustment(s)`,
+        })
+        setSelectedPendingAdjustments(new Set())
+        fetchHistory(true)
+        fetchAdjustmentSummary()
+      } else {
+        toast({
+          title: "Rejection Failed",
+          description: data.error || "Failed to reject adjustments",
+          variant: "destructive",
+        })
+      }
+    } catch (error) {
+      toast({
+        title: "Error",
+        description: "Failed to reject adjustments",
+        variant: "destructive",
+      })
+    } finally {
+      setRejecting(false)
+      setBulkRejectDialogOpen(false)
+      setRejectReason("")
+    }
+  }
+
+  // Toggle selection for pending adjustment group
+  const togglePendingSelection = (groupId: string, checked: boolean) => {
+    setSelectedPendingAdjustments((prev) => {
+      const next = new Set(prev)
+      if (checked) {
+        next.add(groupId)
+      } else {
+        next.delete(groupId)
+      }
+      return next
+    })
+  }
+
+  // Select all pending adjustments
+  const selectAllPending = (checked: boolean) => {
+    if (checked) {
+      setSelectedPendingAdjustments(new Set(pendingAdjustmentGroups.map((g) => g.id)))
+    } else {
+      setSelectedPendingAdjustments(new Set())
+    }
+  }
+
   const filteredDeals = deals.filter((deal) => {
     if (!searchQuery) return true
     const q = searchQuery.toLowerCase()
@@ -1116,9 +1354,31 @@ export default function AdjustmentsPage() {
         </Card>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
+      <Tabs value={activeTab} onValueChange={(value) => {
+        setActiveTab(value)
+        // Clear pending selections when switching tabs
+        if (value !== "pending") {
+          setSelectedPendingAdjustments(new Set())
+        }
+        // Fetch history when switching to pending or history tab
+        if (value === "pending" || value === "history") {
+          fetchHistory(true)
+        }
+      }}>
         <TabsList>
           <TabsTrigger value="create">Create Adjustment</TabsTrigger>
+          <TabsTrigger value="pending" className="gap-2">
+            <Clock className="h-4 w-4" />
+            Pending
+            {pendingCount > 0 && (
+              <Badge
+                variant="secondary"
+                className="ml-1 bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+              >
+                {pendingCount}
+              </Badge>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="participants">
             <Users className="mr-2 h-4 w-4" />
             Merge Participants
@@ -1485,6 +1745,205 @@ export default function AdjustmentsPage() {
                   })
                 )}
               </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Pending Adjustments Tab */}
+        <TabsContent value="pending" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Clock className="h-5 w-5 text-amber-500" />
+                Pending Adjustments
+              </CardTitle>
+              <CardDescription>
+                Review and confirm pending split adjustments before they are finalized
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Search and bulk actions */}
+              <div className="flex flex-wrap items-center gap-4">
+                <div className="relative flex-1 min-w-[200px]">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    placeholder="Search pending adjustments..."
+                    value={pendingSearch}
+                    onChange={(e) => setPendingSearch(e.target.value)}
+                    className="pl-10"
+                  />
+                </div>
+                {selectedPendingAdjustments.size > 0 && (
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => setBulkConfirmDialogOpen(true)}
+                      className="bg-green-600 hover:bg-green-700 text-white"
+                    >
+                      <Check className="h-4 w-4 mr-2" />
+                      Confirm Selected ({selectedPendingAdjustments.size})
+                    </Button>
+                    <Button
+                      variant="outline"
+                      onClick={() => setBulkRejectDialogOpen(true)}
+                      className="border-red-300 text-red-600 hover:bg-red-50"
+                    >
+                      <RotateCcw className="h-4 w-4 mr-2" />
+                      Reject Selected ({selectedPendingAdjustments.size})
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {/* Pending adjustments table */}
+              {historyLoading && pendingAdjustmentGroups.length === 0 ? (
+                <div className="flex items-center justify-center py-12">
+                  <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                </div>
+              ) : pendingAdjustmentGroups.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-12 text-center">
+                  <CheckCircle2 className="mb-2 h-8 w-8 text-green-500" />
+                  <p className="text-muted-foreground">
+                    {pendingSearch ? "No pending adjustments match your search" : "No pending adjustments"}
+                  </p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    Create a new adjustment from the Create tab to see it here
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-lg border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-[50px]">
+                          <Checkbox
+                            checked={
+                              pendingAdjustmentGroups.length > 0 &&
+                              selectedPendingAdjustments.size === pendingAdjustmentGroups.length
+                            }
+                            onCheckedChange={selectAllPending}
+                          />
+                        </TableHead>
+                        <TableHead>Date</TableHead>
+                        <TableHead>Participants</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Note</TableHead>
+                        <TableHead className="text-right">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {pendingAdjustmentGroups.map((group) => {
+                        const firstParticipant = group.participants[0]
+                        return (
+                          <TableRow key={group.id} className="bg-amber-50/30 dark:bg-amber-950/10">
+                            <TableCell>
+                              <Checkbox
+                                checked={selectedPendingAdjustments.has(group.id)}
+                                onCheckedChange={(checked) => togglePendingSelection(group.id, checked as boolean)}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex flex-col">
+                                <span className="font-medium text-sm">
+                                  {new Date(group.created_at).toLocaleDateString("en-US", {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  })}
+                                </span>
+                                <span className="text-xs text-muted-foreground">
+                                  {new Date(group.created_at).toLocaleTimeString("en-US", {
+                                    hour: "numeric",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex flex-col gap-1">
+                                {group.participants.slice(0, 2).map((p) => (
+                                  <div key={p.id} className="flex items-center gap-2 text-sm">
+                                    {p.adjustment_type === "clawback" ? (
+                                      <TrendingDown className="h-3 w-3 text-red-500" />
+                                    ) : (
+                                      <TrendingUp className="h-3 w-3 text-green-500" />
+                                    )}
+                                    <span>{p.participant_name}</span>
+                                    <span className="text-muted-foreground text-xs">
+                                      {p.old_split_pct}% → {p.new_split_pct}%
+                                    </span>
+                                  </div>
+                                ))}
+                                {group.participants.length > 2 && (
+                                  <span className="text-xs text-muted-foreground">
+                                    +{group.participants.length - 2} more
+                                  </span>
+                                )}
+                              </div>
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant="outline"
+                                className={cn(
+                                  "text-xs capitalize",
+                                  group.adjustment_type === "clawback"
+                                    ? "text-red-600 border-red-300 bg-red-50 dark:bg-red-950/50"
+                                    : group.adjustment_type === "additional"
+                                    ? "text-green-600 border-green-300 bg-green-50 dark:bg-green-950/50"
+                                    : "text-blue-600 border-blue-300 bg-blue-50 dark:bg-blue-950/50"
+                                )}
+                              >
+                                {group.adjustment_type}
+                              </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <span className="text-sm text-muted-foreground truncate max-w-[200px] block">
+                                {group.note || "-"}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex items-center justify-end gap-2">
+                                <Button
+                                  size="sm"
+                                  onClick={() => {
+                                    setAdjustmentToConfirm(group)
+                                    setConfirmDialogOpen(true)
+                                  }}
+                                  className="bg-green-600 hover:bg-green-700 text-white"
+                                >
+                                  <Check className="h-4 w-4 mr-1" />
+                                  Confirm
+                                </Button>
+                                {firstParticipant?.deal_id && (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => openViewDialogFromHistory(group.participants, firstParticipant.deal_id!)}
+                                  >
+                                    <Pencil className="h-4 w-4 mr-1" />
+                                    Edit
+                                  </Button>
+                                )}
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    setAdjustmentToReject(group)
+                                    setRejectDialogOpen(true)
+                                  }}
+                                  className="border-red-300 text-red-600 hover:bg-red-50"
+                                >
+                                  <RotateCcw className="h-4 w-4 mr-1" />
+                                  Reject
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        )
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>
@@ -2289,6 +2748,205 @@ export default function AdjustmentsPage() {
                 <>
                   <Trash2 className="mr-2 h-4 w-4" />
                   Delete Deal
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Single Confirm Dialog */}
+      <AlertDialog open={confirmDialogOpen} onOpenChange={setConfirmDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Adjustment</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>Are you sure you want to confirm this adjustment?</p>
+                {adjustmentToConfirm && (
+                  <div className="rounded-lg border bg-muted/50 p-3 space-y-2">
+                    <p className="text-sm">
+                      <span className="font-medium">Participants:</span> {adjustmentToConfirm.participants.length}
+                    </p>
+                    <p className="text-sm">
+                      <span className="font-medium">Type:</span>{" "}
+                      <span className="capitalize">{adjustmentToConfirm.adjustment_type}</span>
+                    </p>
+                    {adjustmentToConfirm.note && (
+                      <p className="text-sm">
+                        <span className="font-medium">Note:</span> {adjustmentToConfirm.note}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <p className="text-sm text-muted-foreground">
+                  Once confirmed, this adjustment will be finalized and included in future payout calculations.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => adjustmentToConfirm && handleConfirmAdjustment(adjustmentToConfirm)}
+              disabled={confirming}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              {confirming ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Confirming...
+                </>
+              ) : (
+                <>
+                  <Check className="mr-2 h-4 w-4" />
+                  Confirm
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Single Reject Dialog */}
+      <AlertDialog open={rejectDialogOpen} onOpenChange={setRejectDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reject Adjustment</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>Are you sure you want to reject this adjustment?</p>
+                {adjustmentToReject && (
+                  <div className="rounded-lg border bg-muted/50 p-3 space-y-2">
+                    <p className="text-sm">
+                      <span className="font-medium">Participants:</span> {adjustmentToReject.participants.length}
+                    </p>
+                    <p className="text-sm">
+                      <span className="font-medium">Type:</span>{" "}
+                      <span className="capitalize">{adjustmentToReject.adjustment_type}</span>
+                    </p>
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <Label htmlFor="reject-reason">Reason (optional):</Label>
+                  <Textarea
+                    id="reject-reason"
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder="Enter reason for rejection..."
+                    rows={2}
+                  />
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Rejected adjustments will be marked as undone and will not affect payouts.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setRejectReason("")}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => adjustmentToReject && handleRejectAdjustment(adjustmentToReject)}
+              disabled={rejecting}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {rejecting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Rejecting...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Reject
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Confirm Dialog */}
+      <AlertDialog open={bulkConfirmDialogOpen} onOpenChange={setBulkConfirmDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm Multiple Adjustments</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  You are about to confirm <strong>{selectedPendingAdjustments.size}</strong> pending adjustment(s).
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Once confirmed, these adjustments will be finalized and included in future payout calculations.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleBulkConfirm}
+              disabled={confirming}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              {confirming ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Confirming...
+                </>
+              ) : (
+                <>
+                  <Check className="mr-2 h-4 w-4" />
+                  Confirm All
+                </>
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Bulk Reject Dialog */}
+      <AlertDialog open={bulkRejectDialogOpen} onOpenChange={setBulkRejectDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reject Multiple Adjustments</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-3">
+                <p>
+                  You are about to reject <strong>{selectedPendingAdjustments.size}</strong> pending adjustment(s).
+                </p>
+                <div className="space-y-2">
+                  <Label htmlFor="bulk-reject-reason">Reason (optional):</Label>
+                  <Textarea
+                    id="bulk-reject-reason"
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder="Enter reason for rejection..."
+                    rows={2}
+                  />
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Rejected adjustments will be marked as undone and will not affect payouts.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setRejectReason("")}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleBulkReject}
+              disabled={rejecting}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {rejecting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Rejecting...
+                </>
+              ) : (
+                <>
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Reject All
                 </>
               )}
             </AlertDialogAction>

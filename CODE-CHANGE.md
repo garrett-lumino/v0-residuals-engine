@@ -1,5 +1,69 @@
 # Code Change Log
 
+## 2026-01-07 (Pending Badge Loads Immediately on Page Mount)
+
+### Files Changed
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Updated pending count badge to use summary data as fallback so it displays immediately on page load.
+
+### Details
+**Problem:** Pending tab badge only showed count after clicking the tab (when history loads)
+
+**Solution:** Updated `pendingCount` to be a `useMemo` that:
+1. Returns `pendingAdjustmentGroups.length` if history is loaded
+2. Falls back to summing `adjustmentSummary[*].pending` counts (loaded on page mount)
+
+This follows the same pattern already used for deal adjustment badges.
+
+---
+
+## 2026-01-07 (Add Pending Adjustments Tab with Confirm/Reject Workflow)
+
+### Files Changed
+- `app/api/adjustments/confirm/route.ts` (NEW)
+- `app/api/adjustments/reject/route.ts` (NEW)
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Added a dedicated "Pending" tab to the Adjustments page with full confirm/reject workflow for pending split adjustments.
+
+### Details
+**New API Endpoints:**
+1. `POST /api/adjustments/confirm` - Confirms pending adjustments by updating status to "confirmed"
+2. `POST /api/adjustments/reject` - Rejects pending adjustments by marking them as undone with optional reason
+
+**New UI Features:**
+1. **Pending Tab** - New tab between "Create Adjustment" and "Merge Participants"
+   - Shows badge with count of pending adjustments
+   - Displays table of all pending adjustment groups
+   - Search functionality to filter pending adjustments
+
+2. **Individual Actions** - Each pending adjustment row has:
+   - Confirm button (green) - Opens confirmation dialog
+   - Edit button - Opens adjustment dialog for modifications
+   - Reject button (red) - Opens rejection dialog with optional reason
+
+3. **Bulk Actions** - When items are selected:
+   - Checkbox column for multi-select
+   - "Select All" checkbox in header
+   - Bulk Confirm button - Confirms all selected at once
+   - Bulk Reject button - Rejects all selected with shared reason
+
+4. **Confirmation Dialogs** - AlertDialog components for:
+   - Single confirm (shows adjustment details)
+   - Single reject (includes reason textarea)
+   - Bulk confirm (shows count)
+   - Bulk reject (includes reason textarea)
+
+**State Management:**
+- Added state for pending search, selection, dialog visibility, and loading states
+- Computed `pendingAdjustmentGroups` filters from existing history data
+- Clears selection when switching away from Pending tab
+
+---
+
 ## 2026-01-07 (Fix Badge Layout and Count Mismatch)
 
 ### Files Changed
