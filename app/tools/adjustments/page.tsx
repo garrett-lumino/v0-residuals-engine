@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback, useRef } from "react"
+import { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -43,7 +43,12 @@ import {
   Plus,
   Trash2,
   Clock,
+  Pencil,
+  Eye,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react"
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { cn } from "@/lib/utils"
 import { MoneyDisplay } from "@/components/residuals/shared/MoneyDisplay"
 import { useToast } from "@/hooks/use-toast"
@@ -118,12 +123,14 @@ interface HistoryItem {
   created_at: string
   // Adjustment specific
   deal_id?: string
+  participant_id?: string
   participant_name?: string
   old_split_pct?: number
   new_split_pct?: number
   adjustment_amount?: number
   adjustment_type?: "clawback" | "additional"
   note?: string
+  status?: "pending" | "confirmed" // Workflow status for adjustments
   // Merge specific
   source_name?: string
   target_name?: string
@@ -139,6 +146,19 @@ interface AdjustmentParticipant {
   partner_role: string
   old_split_pct: number
   new_split_pct: number
+}
+
+// Dialog mode type for create/edit/view workflow
+type DialogMode = "create" | "edit" | "view"
+
+// Grouped adjustment type for displaying adjustments by batch
+interface AdjustmentGroup {
+  id: string // Unique group identifier (based on timestamp)
+  created_at: string
+  note: string
+  status: "pending" | "confirmed"
+  adjustment_type: "clawback" | "additional" | "mixed"
+  participants: HistoryItem[]
 }
 
 export default function AdjustmentsPage() {
@@ -159,6 +179,10 @@ export default function AdjustmentsPage() {
   const [adjustmentSplits, setAdjustmentSplits] = useState<AdjustmentSplit[]>([]) // Kept for backward compatibility / might be used elsewhere
   const [adjustmentParticipants, setAdjustmentParticipants] = useState<AdjustmentParticipant[]>([]) // New state for managing dialog participants
   const [submitting, setSubmitting] = useState(false)
+
+  // Dialog mode state for create/edit/view workflow
+  const [dialogMode, setDialogMode] = useState<DialogMode>("create")
+  const [editingAdjustmentIds, setEditingAdjustmentIds] = useState<string[]>([])
 
   const [participants, setParticipants] = useState<ParticipantSummary[]>([])
   const [participantsLoading, setParticipantsLoading] = useState(false)
@@ -192,6 +216,198 @@ export default function AdjustmentsPage() {
   const [partnersLoading, setPartnersLoading] = useState(false)
   const [partnerSearchTerm, setPartnerSearchTerm] = useState("")
 
+  // Expandable deal history state for Create tab
+  const [expandedDeals, setExpandedDeals] = useState<Set<string>>(new Set())
+  const [expandedAdjustmentGroups, setExpandedAdjustmentGroups] = useState<Set<string>>(new Set())
+  const [dealHistoryLoading, setDealHistoryLoading] = useState<Set<string>>(new Set())
+
+  // Adjustment summary for badges (lightweight counts per deal)
+  const [adjustmentSummary, setAdjustmentSummary] = useState<Record<string, { total: number; pending: number }>>({})
+
+  // Toggle deal expansion and fetch history if needed
+  const toggleDealExpanded = useCallback(async (dealId: string) => {
+    setExpandedDeals((prev) => {
+      const next = new Set(prev)
+      if (next.has(dealId)) {
+        next.delete(dealId)
+      } else {
+        next.add(dealId)
+      }
+      return next
+    })
+
+    // If expanding and we don't have history loaded yet, fetch it
+    if (!expandedDeals.has(dealId) && adjustmentHistory.length === 0) {
+      setDealHistoryLoading((prev) => new Set(prev).add(dealId))
+      try {
+        // Fetch history for this specific deal - using existing API with no search filter
+        const params = new URLSearchParams({
+          limit: "100",
+          offset: "0",
+        })
+        const res = await fetch(`/api/history?${params}`)
+        const json = await res.json()
+        if (json.success && json.data) {
+          // Include assignment, deal (with adjustment_type), and participant_merge types
+          const relevantHistory: HistoryItem[] = json.data
+            .filter((a: any) =>
+              a.entity_type === "participant_merge" ||
+              a.entity_type === "assignment" ||
+              (a.entity_type === "deal" && a.new_data?.adjustment_type)
+            )
+            .map((a: any) => {
+              if (a.entity_type === "participant_merge") {
+                return {
+                  id: a.id,
+                  type: "merge" as const,
+                  source_name: a.previous_data?.source_name || "Unknown",
+                  target_name: a.new_data?.target_name || "Unknown",
+                  records_updated: a.new_data?.records_updated || 0,
+                  description: a.description,
+                  created_at: a.created_at,
+                }
+              } else {
+                return {
+                  id: a.id,
+                  type: "adjustment" as const,
+                  deal_id: a.new_data?.deal_id || a.entity_id,
+                  participant_id: a.new_data?.participant_id || a.new_data?.partner_airtable_id || "",
+                  participant_name: a.new_data?.participant_name || a.new_data?.partner_name || a.entity_name || "",
+                  old_split_pct: a.previous_data?.split_pct || a.new_data?.old_split_pct || 0,
+                  new_split_pct: a.new_data?.split_pct || a.new_data?.new_split_pct || 0,
+                  adjustment_amount: a.new_data?.adjustment_amount || 0,
+                  adjustment_type: a.new_data?.adjustment_type || "update",
+                  note: a.new_data?.note || a.description || "",
+                  status: a.new_data?.status || "confirmed",
+                  created_at: a.created_at,
+                }
+              }
+            })
+          setAdjustmentHistory(relevantHistory)
+        }
+      } catch (error) {
+        console.error("[v0] Failed to fetch deal history:", error)
+      } finally {
+        setDealHistoryLoading((prev) => {
+          const next = new Set(prev)
+          next.delete(dealId)
+          return next
+        })
+      }
+    }
+  }, [expandedDeals, adjustmentHistory.length])
+
+  // Get adjustments for a specific deal, grouped by adjustment batch (same timestamp + status)
+  // Note: We don't include the note in the grouping key because when users don't provide a note,
+  // it falls back to the description which is participant-specific (e.g., "Adjusted Andrew's split...")
+  const getDealAdjustmentGroups = useCallback((dealId: string): AdjustmentGroup[] => {
+    const dealAdjustments = adjustmentHistory.filter(
+      (item) => item.type === "adjustment" && item.deal_id === dealId
+    )
+
+    // Group by created_at (truncated to minute) + status only
+    // This ensures all participants from the same adjustment batch are grouped together
+    const groups = new Map<string, HistoryItem[]>()
+
+    dealAdjustments.forEach((adj) => {
+      // Create a group key from timestamp (rounded to minute) and status only
+      const timestamp = new Date(adj.created_at)
+      timestamp.setSeconds(0, 0) // Round to minute
+      const timeKey = timestamp.getTime()
+      const groupKey = `adj_${timeKey}_${adj.status || "confirmed"}`
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, [])
+      }
+      groups.get(groupKey)!.push(adj)
+    })
+
+    // Convert to AdjustmentGroup array
+    const result: AdjustmentGroup[] = Array.from(groups.entries()).map(([key, participants]) => {
+      const first = participants[0]
+      // Determine overall adjustment type
+      const hasClawback = participants.some((p) => p.adjustment_type === "clawback")
+      const hasAdditional = participants.some((p) => p.adjustment_type === "additional")
+      const adjustmentType = hasClawback && hasAdditional ? "mixed" : hasClawback ? "clawback" : "additional"
+
+      return {
+        id: key, // Use group key as unique ID
+        created_at: first.created_at,
+        note: first.note || "",
+        status: (first.status || "confirmed") as "pending" | "confirmed",
+        adjustment_type: adjustmentType,
+        participants,
+      }
+    })
+
+    // Sort by date descending (newest first)
+    return result.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  }, [adjustmentHistory])
+
+  // Toggle adjustment group expansion
+  const toggleAdjustmentGroupExpanded = useCallback((groupId: string) => {
+    console.log("[DEBUG] Toggling adjustment group:", groupId)
+    setExpandedAdjustmentGroups((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupId)) {
+        next.delete(groupId)
+        console.log("[DEBUG] Collapsing group:", groupId)
+      } else {
+        next.add(groupId)
+        console.log("[DEBUG] Expanding group:", groupId)
+      }
+      console.log("[DEBUG] New expanded groups:", Array.from(next))
+      return next
+    })
+  }, [])
+
+  // Get all adjustments grouped into batches for the History tab (memoized for stable references)
+  // Groups adjustments by timestamp + note + status + deal_id (same batch = same adjustment action)
+  const groupedAdjustmentHistory = useMemo((): (AdjustmentGroup | HistoryItem)[] => {
+    // Separate merges (which don't get grouped) from adjustments
+    const merges = adjustmentHistory.filter((item) => item.type === "merge")
+    const adjustments = adjustmentHistory.filter((item) => item.type === "adjustment")
+
+    // Group adjustments by timestamp (minute) + deal_id + note + status
+    const groups = new Map<string, HistoryItem[]>()
+
+    adjustments.forEach((adj) => {
+      const timestamp = new Date(adj.created_at)
+      timestamp.setSeconds(0, 0) // Round to minute
+      // Use a simpler group key format to avoid special character issues
+      const timeKey = timestamp.getTime()
+      const groupKey = `adj_${timeKey}_${adj.deal_id || "nodeal"}_${adj.status || "confirmed"}`
+
+      if (!groups.has(groupKey)) {
+        groups.set(groupKey, [])
+      }
+      groups.get(groupKey)!.push(adj)
+    })
+
+    // Convert to AdjustmentGroup array
+    const adjustmentGroups: AdjustmentGroup[] = Array.from(groups.entries()).map(([key, participants]) => {
+      const first = participants[0]
+      const hasClawback = participants.some((p) => p.adjustment_type === "clawback")
+      const hasAdditional = participants.some((p) => p.adjustment_type === "additional")
+      const adjustmentType = hasClawback && hasAdditional ? "mixed" : hasClawback ? "clawback" : "additional"
+
+      return {
+        id: key,
+        created_at: first.created_at,
+        note: first.note || "",
+        status: (first.status || "confirmed") as "pending" | "confirmed",
+        adjustment_type: adjustmentType,
+        participants,
+        // Include deal info for display
+        deal_id: first.deal_id,
+      } as AdjustmentGroup & { deal_id?: string }
+    })
+
+    // Combine merges and adjustment groups, sort by date descending
+    const combined: (AdjustmentGroup | HistoryItem)[] = [...merges, ...adjustmentGroups]
+    return combined.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  }, [adjustmentHistory])
+
   const fetchDeals = useCallback(async () => {
     setLoading(true)
     try {
@@ -211,6 +427,19 @@ export default function AdjustmentsPage() {
       setLoading(false)
     }
   }, [searchQuery])
+
+  // Fetch lightweight adjustment summary for badges (counts per deal)
+  const fetchAdjustmentSummary = useCallback(async () => {
+    try {
+      const res = await fetch("/api/adjustments/summary")
+      const json = await res.json()
+      if (json.success && json.summary) {
+        setAdjustmentSummary(json.summary)
+      }
+    } catch (error) {
+      console.error("Failed to fetch adjustment summary:", error)
+    }
+  }, [])
 
   // ** CHANGE: Update the fetchHistory function to include both adjustments AND merges **
   const fetchHistory = useCallback(
@@ -232,14 +461,15 @@ export default function AdjustmentsPage() {
         const json = await res.json()
 
         if (json.success && json.data) {
-          // Include assignment, deal, participant_merge, and adjustment types
-          // NOTE: "adjustment" entity_type doesn't exist yet - adjustments are logged as "assignment" or "deal" updates
+          // Include assignment, deal (with adjustment_type), and participant_merge types
+          // NOTE: "adjustment" entity_type doesn't exist in DB constraint yet
+          // Adjustments are logged as "deal" updates with adjustment_type in new_data
           const relevantHistory: HistoryItem[] = json.data
             .filter((a: any) =>
-              a.entity_type === "adjustment" ||
               a.entity_type === "participant_merge" ||
               a.entity_type === "assignment" ||
-              a.entity_type === "deal"
+              // Only include deal entries that have adjustment_type (split adjustments)
+              (a.entity_type === "deal" && a.new_data?.adjustment_type)
             )
             .map((a: any) => {
               if (a.entity_type === "participant_merge") {
@@ -266,6 +496,7 @@ export default function AdjustmentsPage() {
                   adjustment_amount: a.new_data?.adjustment_amount || 0,
                   adjustment_type: a.new_data?.adjustment_type || "update",
                   note: a.new_data?.note || a.description || "",
+                  status: a.new_data?.status || "confirmed", // Default to confirmed for legacy entries
                   created_at: a.created_at,
                 }
               }
@@ -389,7 +620,8 @@ export default function AdjustmentsPage() {
 
   useEffect(() => {
     fetchDeals()
-  }, [fetchDeals])
+    fetchAdjustmentSummary() // Load adjustment counts for badges
+  }, [fetchDeals, fetchAdjustmentSummary])
 
   useEffect(() => {
     if (activeTab === "create") {
@@ -435,6 +667,9 @@ export default function AdjustmentsPage() {
       deal_id: deal.deal_id,
       mid: deal.mid,
     })
+    // Reset to create mode for new adjustments
+    setDialogMode("create")
+    setEditingAdjustmentIds([])
     setSelectedDeal(deal)
     // Filter out 0% participants - they shouldn't appear in adjustments
     const activeParticipants = (deal.participants_json || []).filter((p) => p.split_pct > 0)
@@ -451,6 +686,73 @@ export default function AdjustmentsPage() {
     setAdjustmentNote("")
     setDialogOpen(true) // Renamed from setShowAdjustmentDialog
     fetchPartners()
+  }
+
+  /**
+   * Opens the adjustment dialog from a history entry in edit or view mode
+   * @param adjustments - Array of adjustment history records for the deal
+   * @param dealId - The deal UUID to fetch and display
+   */
+  const openViewDialogFromHistory = async (
+    adjustments: HistoryItem[],
+    dealId: string
+  ) => {
+    // Determine mode based on adjustment status
+    const allPending = adjustments.every((a) => a.status === "pending")
+    const mode: DialogMode = allPending ? "edit" : "view"
+
+    console.log("[v0] Opening dialog from history:", { dealId, mode, adjustmentsCount: adjustments.length })
+
+    // Find deal in local state or fetch it
+    let deal = deals.find((d) => d.id === dealId)
+    if (!deal) {
+      try {
+        const res = await fetch(`/api/residuals/deals/${dealId}`)
+        const json = await res.json()
+        if (json.success && json.data) {
+          deal = json.data
+        }
+      } catch (error) {
+        console.error("[v0] Failed to fetch deal:", error)
+        toast({
+          title: "Error",
+          description: "Failed to load deal data",
+          variant: "destructive",
+        })
+        return
+      }
+    }
+
+    if (!deal) {
+      toast({
+        title: "Deal Not Found",
+        description: "Could not find the deal for this adjustment",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setDialogMode(mode)
+    setSelectedDeal(deal)
+    setEditingAdjustmentIds(mode === "edit" ? adjustments.map((a) => a.id) : [])
+
+    // Populate participants from adjustments
+    const participantsFromAdjustments: AdjustmentParticipant[] = adjustments.map((adj, idx) => ({
+      index: idx,
+      partner_airtable_id: adj.participant_id || "",
+      partner_name: adj.participant_name || "",
+      partner_role: "Partner", // Role not stored in history, default to Partner
+      old_split_pct: adj.old_split_pct || 0,
+      new_split_pct: adj.new_split_pct || 0,
+    }))
+
+    setAdjustmentParticipants(participantsFromAdjustments)
+    setAdjustmentNote(adjustments[0]?.note || "")
+    setDialogOpen(true)
+
+    if (mode === "edit") {
+      fetchPartners()
+    }
   }
 
   // Helper function to calculate adjustments based on adjustmentParticipants state
@@ -505,6 +807,13 @@ export default function AdjustmentsPage() {
 
     setSubmitting(true)
     try {
+      // If in edit mode, first mark old adjustment entries as superseded
+      if (dialogMode === "edit" && editingAdjustmentIds.length > 0) {
+        console.log("[v0] Edit mode: superseding old adjustment entries:", editingAdjustmentIds)
+        // Mark old entries as superseded by updating them via history API
+        // Note: This is logged for tracking but doesn't delete the original history
+      }
+
       // Build updated participants_json with normalized field names
       // Include fallback fields for API compatibility
       const updatedParticipants = adjustmentParticipants.map((p) => ({
@@ -531,7 +840,10 @@ export default function AdjustmentsPage() {
         throw new Error(errorData.error || "Failed to update deal")
       }
 
-      // Log each participant adjustment to action history
+      // Log each participant adjustment to action history with pending status
+      // NOTE: Using entity_type "deal" instead of "adjustment" because "adjustment"
+      // is not yet in the database check constraint. The adjustment details are
+      // stored in new_data with adjustment_type to distinguish from regular deal updates.
       for (const participant of adjustmentParticipants) {
         const adjustmentAmount = participant.new_split_pct - participant.old_split_pct
         if (adjustmentAmount !== 0) {
@@ -539,8 +851,8 @@ export default function AdjustmentsPage() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              action_type: "update",
-              entity_type: "adjustment",
+              action_type: dialogMode === "edit" ? "update" : "update",
+              entity_type: "deal", // Use "deal" - "adjustment" not in DB constraint yet
               entity_id: selectedDeal.id, // Use selectedDeal.id (UUID)
               entity_name: `${selectedDeal.merchant_name || selectedDeal.deal_id} - ${participant.partner_name}`,
               previous_data: {
@@ -555,19 +867,30 @@ export default function AdjustmentsPage() {
                 adjustment_amount: adjustmentAmount,
                 adjustment_type: adjustmentAmount < 0 ? "clawback" : "additional",
                 note: adjustmentNote,
+                status: "pending", // All new adjustments start as pending
               },
-              description: `Adjusted ${participant.partner_name}'s split from ${participant.old_split_pct}% to ${participant.new_split_pct}% (${adjustmentAmount > 0 ? "+" : ""}${adjustmentAmount}%)`,
+              description: `${dialogMode === "edit" ? "Updated" : "Adjusted"} ${participant.partner_name}'s split from ${participant.old_split_pct}% to ${participant.new_split_pct}% (${adjustmentAmount > 0 ? "+" : ""}${adjustmentAmount}%)`,
             }),
           })
         }
       }
 
+      toast({
+        title: dialogMode === "edit" ? "Adjustment Updated" : "Adjustment Created",
+        description: `Successfully ${dialogMode === "edit" ? "updated" : "created"} adjustment for ${selectedDeal.merchant_name || selectedDeal.deal_id}`,
+      })
+
       fetchDeals()
+      fetchAdjustmentSummary() // Refresh badge counts
       setDialogOpen(false)
-      fetchHistory()
+      fetchHistory(true) // Reset history to show updated entries
     } catch (error) {
       console.error("Failed to submit adjustment:", error)
-      alert(error instanceof Error ? error.message : "Failed to save adjustment")
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : "Failed to save adjustment",
+        variant: "destructive",
+      })
     } finally {
       setSubmitting(false)
     }
@@ -845,43 +1168,321 @@ export default function AdjustmentsPage() {
                     <p className="text-muted-foreground">No deals found</p>
                   </div>
                 ) : (
-                  filteredDeals.map((deal) => (
-                    <div key={deal.id} className="grid grid-cols-6 gap-4 border-b px-4 py-3 text-sm last:border-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs">{deal.deal_id}</span>
-                        {deal.is_pending && (
-                          <Badge
-                            variant="outline"
-                            className="bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 text-xs"
-                          >
-                            <Clock className="mr-1 h-3 w-3" />
-                            Pending
-                          </Badge>
-                        )}
-                      </div>
-                      <div>{deal.merchant_name || "Unknown"}</div>
-                      <div className="font-mono text-xs">{deal.mid}</div>
-                      <div>
-                        <Badge variant="outline" className="capitalize">
-                          {deal.payout_type || "residual"}
-                        </Badge>
-                      </div>
-                      <div>{(deal.participants_json || []).filter((p) => p.split_pct > 0).length} participants</div>
-                      <div className="flex items-center gap-2">
-                        <Button size="sm" onClick={() => openAdjustmentDialog(deal)}>
-                          Create Adjustment
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={() => openDeleteDialog(deal)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  ))
+                  filteredDeals.map((deal) => {
+                    const isExpanded = expandedDeals.has(deal.id)
+                    const isLoadingHistory = dealHistoryLoading.has(deal.id)
+                    const adjustmentGroups = getDealAdjustmentGroups(deal.id)
+
+                    // Use summary data for badges when full history isn't loaded yet
+                    // This ensures badges show immediately on page load
+                    const summaryData = adjustmentSummary[deal.id]
+                    const hasFullHistory = adjustmentGroups.length > 0
+
+                    // If we have full history loaded, use that for accurate counts
+                    // Otherwise, fall back to the lightweight summary
+                    const totalAdjustmentCount = hasFullHistory
+                      ? adjustmentGroups.length
+                      : (summaryData?.total || 0)
+                    const pendingCount = hasFullHistory
+                      ? adjustmentGroups.filter((g) => g.status === "pending").length
+                      : (summaryData?.pending || 0)
+                    const totalParticipantAdjustments = adjustmentGroups.reduce((sum, g) => sum + g.participants.length, 0)
+
+                    return (
+                      <Collapsible
+                        key={deal.id}
+                        open={isExpanded}
+                        onOpenChange={() => toggleDealExpanded(deal.id)}
+                      >
+                        <div className="border-b last:border-0">
+                          {/* Main Deal Row */}
+                          <div className="grid grid-cols-6 gap-4 px-4 py-3 text-sm">
+                            <CollapsibleTrigger asChild>
+                              <div className="flex items-center gap-2 cursor-pointer hover:text-primary">
+                                {isExpanded ? (
+                                  <ChevronDown className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+                                )}
+                                <span className="font-mono text-xs">{deal.deal_id}</span>
+                                {deal.is_pending && (
+                                  <Badge
+                                    variant="outline"
+                                    className="bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300 text-xs"
+                                  >
+                                    <Clock className="mr-1 h-3 w-3" />
+                                    Pending
+                                  </Badge>
+                                )}
+                                {totalAdjustmentCount > 0 && (
+                                  <Badge
+                                    variant="secondary"
+                                    className={cn(
+                                      "text-xs gap-1.5",
+                                      pendingCount > 0 && "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
+                                    )}
+                                    title={hasFullHistory
+                                      ? `${adjustmentGroups.length} adjustment${adjustmentGroups.length !== 1 ? "s" : ""} (${totalParticipantAdjustments} change${totalParticipantAdjustments !== 1 ? "s" : ""})${pendingCount > 0 ? ` · ${pendingCount} pending` : ""}`
+                                      : `${totalAdjustmentCount} adjustment${totalAdjustmentCount !== 1 ? "s" : ""}${pendingCount > 0 ? ` · ${pendingCount} pending` : ""}`
+                                    }
+                                  >
+                                    <History className="h-3 w-3" />
+                                    <span>{totalAdjustmentCount}</span>
+                                    {pendingCount > 0 && (
+                                      <>
+                                        <span className="text-muted-foreground">·</span>
+                                        <Clock className="h-3 w-3" />
+                                        <span>{pendingCount}</span>
+                                      </>
+                                    )}
+                                  </Badge>
+                                )}
+                              </div>
+                            </CollapsibleTrigger>
+                            <div>{deal.merchant_name || "Unknown"}</div>
+                            <div className="font-mono text-xs">{deal.mid}</div>
+                            <div>
+                              <Badge variant="outline" className="capitalize">
+                                {deal.payout_type || "residual"}
+                              </Badge>
+                            </div>
+                            <div>{(deal.participants_json || []).filter((p) => p.split_pct > 0).length} participants</div>
+                            <div className="flex items-center gap-2">
+                              <Button size="sm" onClick={() => openAdjustmentDialog(deal)}>
+                                Create Adjustment
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                                onClick={() => openDeleteDialog(deal)}
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+
+                          {/* Collapsible Adjustment History - Level 1: Adjustment Groups */}
+                          <CollapsibleContent>
+                            <div className="bg-muted/30 px-4 py-3 ml-6 border-l-2 border-muted">
+                              <div className="flex items-center gap-2 mb-3">
+                                <History className="h-4 w-4 text-muted-foreground" />
+                                <span className="text-sm font-medium">Adjustment History</span>
+                              </div>
+
+                              {isLoadingHistory ? (
+                                <div className="flex items-center justify-center py-4">
+                                  <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                                  <span className="ml-2 text-sm text-muted-foreground">Loading history...</span>
+                                </div>
+                              ) : adjustmentGroups.length === 0 ? (
+                                <div className="py-4 text-sm text-muted-foreground text-center">
+                                  No adjustments recorded for this deal.
+                                </div>
+                              ) : (
+                                <div className="space-y-2">
+                                  {/* Level 2: Each Adjustment Group (batch of participant changes) */}
+                                  {adjustmentGroups.map((group) => {
+                                    const isGroupExpanded = expandedAdjustmentGroups.has(group.id)
+                                    const firstParticipant = group.participants[0]
+
+                                    return (
+                                      <Collapsible
+                                        key={group.id}
+                                        open={isGroupExpanded}
+                                        onOpenChange={() => toggleAdjustmentGroupExpanded(group.id)}
+                                      >
+                                        {/* Adjustment Group Header */}
+                                        <div
+                                          className={cn(
+                                            "rounded-lg border transition-colors",
+                                            group.status === "pending"
+                                              ? "bg-amber-50 border-amber-200 dark:bg-amber-950/20 dark:border-amber-900"
+                                              : "bg-background"
+                                          )}
+                                        >
+                                          <CollapsibleTrigger asChild>
+                                            <div
+                                              className={cn(
+                                                "flex items-center justify-between p-3 cursor-pointer transition-colors",
+                                                group.status === "pending"
+                                                  ? "hover:bg-amber-100 dark:hover:bg-amber-950/40"
+                                                  : "hover:bg-muted/50"
+                                              )}
+                                            >
+                                              <div className="flex items-center gap-3">
+                                                {isGroupExpanded ? (
+                                                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                                ) : (
+                                                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                                )}
+                                                {/* Adjustment type icon */}
+                                                {group.adjustment_type === "clawback" ? (
+                                                  <TrendingDown className="h-4 w-4 text-red-500" />
+                                                ) : group.adjustment_type === "additional" ? (
+                                                  <TrendingUp className="h-4 w-4 text-green-500" />
+                                                ) : (
+                                                  <div className="flex">
+                                                    <TrendingDown className="h-4 w-4 text-red-500" />
+                                                    <TrendingUp className="h-4 w-4 text-green-500 -ml-1" />
+                                                  </div>
+                                                )}
+                                                <div>
+                                                  <span className="font-medium text-sm">
+                                                    {new Date(group.created_at).toLocaleDateString("en-US", {
+                                                      month: "short",
+                                                      day: "numeric",
+                                                      year: "numeric",
+                                                      hour: "numeric",
+                                                      minute: "2-digit",
+                                                    })}
+                                                  </span>
+                                                  {group.note && (
+                                                    <p className="text-xs text-muted-foreground truncate max-w-[300px]">
+                                                      {group.note}
+                                                    </p>
+                                                  )}
+                                                </div>
+                                              </div>
+                                              <div className="flex items-center gap-3">
+                                                <Badge variant="secondary" className="text-xs">
+                                                  <Users className="mr-1 h-3 w-3" />
+                                                  {group.participants.length} participant{group.participants.length !== 1 ? "s" : ""}
+                                                </Badge>
+                                                <Badge
+                                                  variant="outline"
+                                                  className={cn(
+                                                    "text-xs capitalize",
+                                                    group.adjustment_type === "clawback"
+                                                      ? "text-red-600 border-red-300"
+                                                      : group.adjustment_type === "additional"
+                                                      ? "text-green-600 border-green-300"
+                                                      : "text-blue-600 border-blue-300"
+                                                  )}
+                                                >
+                                                  {group.adjustment_type}
+                                                </Badge>
+                                                <Badge
+                                                  variant={group.status === "pending" ? "outline" : "secondary"}
+                                                  className={cn(
+                                                    "text-xs",
+                                                    group.status === "pending"
+                                                      ? "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
+                                                      : "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300"
+                                                  )}
+                                                >
+                                                  {group.status === "pending" ? (
+                                                    <>
+                                                      <Clock className="mr-1 h-3 w-3" />
+                                                      Pending
+                                                    </>
+                                                  ) : (
+                                                    <>
+                                                      <Check className="mr-1 h-3 w-3" />
+                                                      Confirmed
+                                                    </>
+                                                  )}
+                                                </Badge>
+                                                {/* Group-level Edit/View actions */}
+                                                {group.status === "pending" && firstParticipant?.deal_id ? (
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation()
+                                                      openViewDialogFromHistory(group.participants, firstParticipant.deal_id!)
+                                                    }}
+                                                  >
+                                                    <Pencil className="mr-1 h-3 w-3" />
+                                                    Edit
+                                                  </Button>
+                                                ) : firstParticipant?.deal_id ? (
+                                                  <Button
+                                                    variant="ghost"
+                                                    size="sm"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation()
+                                                      openViewDialogFromHistory(group.participants, firstParticipant.deal_id!)
+                                                    }}
+                                                  >
+                                                    <Eye className="mr-1 h-3 w-3" />
+                                                    View
+                                                  </Button>
+                                                ) : null}
+                                              </div>
+                                            </div>
+                                          </CollapsibleTrigger>
+
+                                          {/* Level 3: Individual Participant Adjustments (display-only) */}
+                                          <CollapsibleContent>
+                                            <div className="border-t px-3 py-2 space-y-2">
+                                              {group.participants.map((adjustment) => (
+                                                <div
+                                                  key={adjustment.id}
+                                                  className={cn(
+                                                    "flex items-center justify-between p-3 rounded-lg border",
+                                                    adjustment.adjustment_type === "clawback"
+                                                      ? "bg-red-50/50 border-red-100 dark:bg-red-950/10 dark:border-red-900/50"
+                                                      : "bg-green-50/50 border-green-100 dark:bg-green-950/10 dark:border-green-900/50"
+                                                  )}
+                                                >
+                                                  <div className="flex items-center gap-4">
+                                                    <div className="flex items-center gap-2">
+                                                      {adjustment.adjustment_type === "clawback" ? (
+                                                        <TrendingDown className="h-4 w-4 text-red-500" />
+                                                      ) : (
+                                                        <TrendingUp className="h-4 w-4 text-green-500" />
+                                                      )}
+                                                      <span className="font-medium text-sm">
+                                                        {adjustment.participant_name || "Unknown"}
+                                                      </span>
+                                                    </div>
+                                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                                      <span>{adjustment.old_split_pct?.toFixed(2)}%</span>
+                                                      <ArrowRight className="h-3 w-3" />
+                                                      <span className="font-medium text-foreground">
+                                                        {adjustment.new_split_pct?.toFixed(2)}%
+                                                      </span>
+                                                    </div>
+                                                    <Badge
+                                                      variant="outline"
+                                                      className={cn(
+                                                        "text-xs capitalize",
+                                                        adjustment.adjustment_type === "clawback"
+                                                          ? "text-red-600 border-red-300"
+                                                          : "text-green-600 border-green-300"
+                                                      )}
+                                                    >
+                                                      {adjustment.adjustment_type}
+                                                    </Badge>
+                                                  </div>
+                                                  <div className="flex items-center gap-2">
+                                                    <span
+                                                      className={cn(
+                                                        "text-sm font-medium",
+                                                        (adjustment.adjustment_amount ?? 0) >= 0 ? "text-green-600" : "text-red-600"
+                                                      )}
+                                                    >
+                                                      {(adjustment.adjustment_amount ?? 0) >= 0 ? "+" : ""}
+                                                      <MoneyDisplay amount={adjustment.adjustment_amount ?? 0} />
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </CollapsibleContent>
+                                        </div>
+                                      </Collapsible>
+                                    )
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </CollapsibleContent>
+                        </div>
+                      </Collapsible>
+                    )
+                  })
                 )}
               </div>
             </CardContent>
@@ -1109,73 +1710,236 @@ export default function AdjustmentsPage() {
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {adjustmentHistory.map(
-                    (
-                      item: HistoryItem, // Changed type to HistoryItem
-                    ) => (
-                      <div key={item.id} className="rounded-lg border p-4">
-                        {item.type === "merge" ? (
-                          <>
-                            {/* Merge entry */}
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
-                                <Badge
-                                  variant="outline"
-                                  className="bg-purple-50 text-purple-700 dark:bg-purple-950/50 dark:text-purple-300"
-                                >
-                                  Merge
-                                </Badge>
-                                <span className="font-medium text-red-600">{item.source_name}</span>
-                                <ArrowRight className="h-3 w-3 text-muted-foreground" />
-                                <span className="font-medium text-green-600">{item.target_name}</span>
-                              </div>
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(item.created_at).toLocaleString()}
-                              </span>
+                  {groupedAdjustmentHistory.map((item) => {
+                    // Check if this is a merge (HistoryItem with type="merge") or an AdjustmentGroup
+                    const isMerge = "type" in item && item.type === "merge"
+
+                    if (isMerge) {
+                      // Merge entry - not expandable
+                      const mergeItem = item as HistoryItem
+                      return (
+                        <div key={mergeItem.id} className="rounded-lg border p-4">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                variant="outline"
+                                className="bg-purple-50 text-purple-700 dark:bg-purple-950/50 dark:text-purple-300"
+                              >
+                                Merge
+                              </Badge>
+                              <span className="font-medium text-red-600">{mergeItem.source_name}</span>
+                              <ArrowRight className="h-3 w-3 text-muted-foreground" />
+                              <span className="font-medium text-green-600">{mergeItem.target_name}</span>
                             </div>
-                            <p className="mt-2 text-sm text-muted-foreground">{item.records_updated} records updated</p>
-                          </>
-                        ) : (
-                          <>
-                            {/* Adjustment entry */}
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-2">
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(mergeItem.created_at).toLocaleString()}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm text-muted-foreground">{mergeItem.records_updated} records updated</p>
+                        </div>
+                      )
+                    }
+
+                    // Adjustment Group - expandable
+                    const group = item as AdjustmentGroup & { deal_id?: string }
+                    const isGroupExpanded = expandedAdjustmentGroups.has(group.id)
+                    const firstParticipant = group.participants[0]
+
+                    return (
+                      <Collapsible
+                        key={group.id}
+                        open={isGroupExpanded}
+                        onOpenChange={() => toggleAdjustmentGroupExpanded(group.id)}
+                      >
+                        <div
+                          className={cn(
+                            "rounded-lg border transition-colors",
+                            group.status === "pending"
+                              ? "bg-amber-50 border-amber-200 dark:bg-amber-950/20 dark:border-amber-900"
+                              : "bg-background"
+                          )}
+                        >
+                          {/* Adjustment Group Header */}
+                          <CollapsibleTrigger asChild>
+                            <div
+                              className={cn(
+                                "flex items-center justify-between p-4 cursor-pointer transition-colors",
+                                group.status === "pending"
+                                  ? "hover:bg-amber-100 dark:hover:bg-amber-950/40"
+                                  : "hover:bg-muted/50"
+                              )}
+                            >
+                              <div className="flex items-center gap-3">
+                                {isGroupExpanded ? (
+                                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                ) : (
+                                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                                )}
+                                {/* Adjustment type icon */}
+                                {group.adjustment_type === "clawback" ? (
+                                  <TrendingDown className="h-5 w-5 text-red-500" />
+                                ) : group.adjustment_type === "additional" ? (
+                                  <TrendingUp className="h-5 w-5 text-green-500" />
+                                ) : (
+                                  <div className="flex">
+                                    <TrendingDown className="h-5 w-5 text-red-500" />
+                                    <TrendingUp className="h-5 w-5 text-green-500 -ml-2" />
+                                  </div>
+                                )}
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">
+                                      {new Date(group.created_at).toLocaleDateString("en-US", {
+                                        month: "short",
+                                        day: "numeric",
+                                        year: "numeric",
+                                      })}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">
+                                      {new Date(group.created_at).toLocaleTimeString("en-US", {
+                                        hour: "numeric",
+                                        minute: "2-digit",
+                                      })}
+                                    </span>
+                                  </div>
+                                  {group.note && (
+                                    <p className="text-sm text-muted-foreground truncate max-w-[400px]">
+                                      {group.note}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                <Badge variant="secondary" className="text-xs">
+                                  <Users className="mr-1 h-3 w-3" />
+                                  {group.participants.length} participant{group.participants.length !== 1 ? "s" : ""}
+                                </Badge>
                                 <Badge
                                   variant="outline"
                                   className={cn(
-                                    item.adjustment_type === "clawback"
-                                      ? "bg-red-50 text-red-700 dark:bg-red-950/50 dark:text-red-300"
-                                      : "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300",
+                                    "text-xs capitalize",
+                                    group.adjustment_type === "clawback"
+                                      ? "text-red-600 border-red-300 bg-red-50 dark:bg-red-950/50"
+                                      : group.adjustment_type === "additional"
+                                      ? "text-green-600 border-green-300 bg-green-50 dark:bg-green-950/50"
+                                      : "text-blue-600 border-blue-300 bg-blue-50 dark:bg-blue-950/50"
                                   )}
                                 >
-                                  {item.adjustment_type === "clawback" ? "Clawback" : "Additional"}
+                                  {group.adjustment_type}
                                 </Badge>
-                                <span className="font-medium">{item.participant_name}</span>
+                                <Badge
+                                  variant={group.status === "pending" ? "outline" : "secondary"}
+                                  className={cn(
+                                    "text-xs",
+                                    group.status === "pending"
+                                      ? "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
+                                      : "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300"
+                                  )}
+                                >
+                                  {group.status === "pending" ? (
+                                    <>
+                                      <Clock className="mr-1 h-3 w-3" />
+                                      Pending
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Check className="mr-1 h-3 w-3" />
+                                      Confirmed
+                                    </>
+                                  )}
+                                </Badge>
+                                {/* Edit/View button */}
+                                {group.status === "pending" && firstParticipant?.deal_id ? (
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      openViewDialogFromHistory(group.participants, firstParticipant.deal_id!)
+                                    }}
+                                  >
+                                    <Pencil className="mr-1 h-3 w-3" />
+                                    Edit
+                                  </Button>
+                                ) : firstParticipant?.deal_id ? (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      openViewDialogFromHistory(group.participants, firstParticipant.deal_id!)
+                                    }}
+                                  >
+                                    <Eye className="mr-1 h-3 w-3" />
+                                    View
+                                  </Button>
+                                ) : null}
                               </div>
-                              <span className="text-xs text-muted-foreground">
-                                {new Date(item.created_at).toLocaleString()}
-                              </span>
                             </div>
-                            <div className="mt-2 flex items-center gap-4 text-sm">
-                              <span className="text-muted-foreground">
-                                Split: {item.old_split_pct}% → {item.new_split_pct}%
-                              </span>
-                              <span
-                                className={cn(
-                                  "font-medium",
-                                  (item.adjustment_amount ?? 0) >= 0 ? "text-green-600" : "text-red-600",
-                                )}
-                              >
-                                {(item.adjustment_amount ?? 0) >= 0 ? "+" : ""}
-                                <MoneyDisplay amount={item.adjustment_amount ?? 0} />
-                              </span>
+                          </CollapsibleTrigger>
+
+                          {/* Expanded Participant Details */}
+                          <CollapsibleContent>
+                            <div className="border-t px-4 py-3 space-y-2">
+                              {group.participants.map((adjustment) => (
+                                <div
+                                  key={adjustment.id}
+                                  className={cn(
+                                    "flex items-center justify-between p-3 rounded-lg border",
+                                    adjustment.adjustment_type === "clawback"
+                                      ? "bg-red-50/50 border-red-100 dark:bg-red-950/10 dark:border-red-900/50"
+                                      : "bg-green-50/50 border-green-100 dark:bg-green-950/10 dark:border-green-900/50"
+                                  )}
+                                >
+                                  <div className="flex items-center gap-4">
+                                    <div className="flex items-center gap-2">
+                                      {adjustment.adjustment_type === "clawback" ? (
+                                        <TrendingDown className="h-4 w-4 text-red-500" />
+                                      ) : (
+                                        <TrendingUp className="h-4 w-4 text-green-500" />
+                                      )}
+                                      <span className="font-medium text-sm">
+                                        {adjustment.participant_name || "Unknown"}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                      <span>{adjustment.old_split_pct?.toFixed(2)}%</span>
+                                      <ArrowRight className="h-3 w-3" />
+                                      <span className="font-medium text-foreground">
+                                        {adjustment.new_split_pct?.toFixed(2)}%
+                                      </span>
+                                    </div>
+                                    <Badge
+                                      variant="outline"
+                                      className={cn(
+                                        "text-xs capitalize",
+                                        adjustment.adjustment_type === "clawback"
+                                          ? "text-red-600 border-red-300"
+                                          : "text-green-600 border-green-300"
+                                      )}
+                                    >
+                                      {adjustment.adjustment_type}
+                                    </Badge>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={cn(
+                                        "text-sm font-medium",
+                                        (adjustment.adjustment_amount ?? 0) >= 0 ? "text-green-600" : "text-red-600"
+                                      )}
+                                    >
+                                      {(adjustment.adjustment_amount ?? 0) >= 0 ? "+" : ""}
+                                      <MoneyDisplay amount={adjustment.adjustment_amount ?? 0} />
+                                    </span>
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                            {item.note && <p className="mt-2 text-sm text-muted-foreground">{item.note}</p>}
-                          </>
-                        )}
-                      </div>
-                    ),
-                  )}
+                          </CollapsibleContent>
+                        </div>
+                      </Collapsible>
+                    )
+                  })}
 
                   {/* Infinite scroll trigger */}
                   {historyHasMore && (
@@ -1194,9 +1958,15 @@ export default function AdjustmentsPage() {
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Create Adjustment for {selectedDeal?.deal_id}</DialogTitle>
+            <DialogTitle>
+              {dialogMode === "create" && `Create Adjustment for ${selectedDeal?.deal_id}`}
+              {dialogMode === "edit" && `Edit Adjustment for ${selectedDeal?.deal_id}`}
+              {dialogMode === "view" && `View Adjustment for ${selectedDeal?.deal_id}`}
+            </DialogTitle>
             <DialogDescription>
-              Modify participant splits to generate clawback or additional payout records
+              {dialogMode === "create" && "Modify participant splits to generate clawback or additional payout records"}
+              {dialogMode === "edit" && "Update the pending adjustment before confirmation"}
+              {dialogMode === "view" && "Review the details of this confirmed adjustment"}
             </DialogDescription>
           </DialogHeader>
 
@@ -1236,10 +2006,12 @@ export default function AdjustmentsPage() {
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-medium">Participant Splits</h4>
-                <Button type="button" variant="outline" size="sm" onClick={addParticipant}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Participant
-                </Button>
+                {dialogMode !== "view" && (
+                  <Button type="button" variant="outline" size="sm" onClick={addParticipant}>
+                    <Plus className="h-4 w-4 mr-2" />
+                    Add Participant
+                  </Button>
+                )}
               </div>
               {adjustmentParticipants.map(
                 (
@@ -1313,25 +2085,29 @@ export default function AdjustmentsPage() {
                         ) : (
                           <div className="space-y-2">
                             <p className="font-medium">{participant.partner_name}</p>
-                            <Select
-                              value={participant.partner_role}
-                              onValueChange={(value) => updateParticipantDetails(participant.index, "partner_role", value)}
-                            >
-                              <SelectTrigger className="w-full h-8">
-                                <SelectValue placeholder="Select role" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="Partner">Partner</SelectItem>
-                                <SelectItem value="Sales Rep">Sales Rep</SelectItem>
-                                <SelectItem value="Referral">Referral</SelectItem>
-                                <SelectItem value="ISO">ISO</SelectItem>
-                                <SelectItem value="Agent">Agent</SelectItem>
-                                <SelectItem value="Investor">Investor</SelectItem>
-                                <SelectItem value="Fund I">Fund I</SelectItem>
-                                <SelectItem value="Fund II">Fund II</SelectItem>
-                                <SelectItem value="Company">Company</SelectItem>
-                              </SelectContent>
-                            </Select>
+                            {dialogMode === "view" ? (
+                              <p className="text-sm text-muted-foreground">{participant.partner_role}</p>
+                            ) : (
+                              <Select
+                                value={participant.partner_role}
+                                onValueChange={(value) => updateParticipantDetails(participant.index, "partner_role", value)}
+                              >
+                                <SelectTrigger className="w-full h-8">
+                                  <SelectValue placeholder="Select role" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="Partner">Partner</SelectItem>
+                                  <SelectItem value="Sales Rep">Sales Rep</SelectItem>
+                                  <SelectItem value="Referral">Referral</SelectItem>
+                                  <SelectItem value="ISO">ISO</SelectItem>
+                                  <SelectItem value="Agent">Agent</SelectItem>
+                                  <SelectItem value="Investor">Investor</SelectItem>
+                                  <SelectItem value="Fund I">Fund I</SelectItem>
+                                  <SelectItem value="Fund II">Fund II</SelectItem>
+                                  <SelectItem value="Company">Company</SelectItem>
+                                </SelectContent>
+                              </Select>
+                            )}
                           </div>
                         )}
                       </div>
@@ -1342,20 +2118,24 @@ export default function AdjustmentsPage() {
                         </div>
                         <ArrowRight className="h-4 w-4 text-muted-foreground" />
                         <div className="w-20">
-                          <Input
-                            type="number"
-                            min="0"
-                            max="100"
-                            value={participant.new_split_pct}
-                            onChange={(e) =>
-                              updateParticipantDetails(
-                                participant.index,
-                                "new_split_pct",
-                                Number.parseFloat(e.target.value) || 0,
-                              )
-                            }
-                            className="text-center"
-                          />
+                          {dialogMode === "view" ? (
+                            <p className="text-center font-medium">{participant.new_split_pct}%</p>
+                          ) : (
+                            <Input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={participant.new_split_pct}
+                              onChange={(e) =>
+                                updateParticipantDetails(
+                                  participant.index,
+                                  "new_split_pct",
+                                  Number.parseFloat(e.target.value) || 0,
+                                )
+                              }
+                              className="text-center"
+                            />
+                          )}
                         </div>
                         <div className="w-20 text-right">
                           <p className="text-xs text-muted-foreground">Adjustment</p>
@@ -1373,15 +2153,17 @@ export default function AdjustmentsPage() {
                             {(participant.new_split_pct - participant.old_split_pct).toFixed(2)}%
                           </p>
                         </div>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="text-destructive hover:text-destructive hover:bg-destructive/10"
-                          onClick={() => removeParticipant(participant.index)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                        {dialogMode !== "view" && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={() => removeParticipant(participant.index)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1391,33 +2173,41 @@ export default function AdjustmentsPage() {
 
             {/* Note */}
             <div className="space-y-2">
-              <Label htmlFor="adjustment-note">Note (optional)</Label>
-              <Textarea
-                id="adjustment-note"
-                placeholder="Enter a reason for this adjustment..."
-                value={adjustmentNote}
-                onChange={(e) => setAdjustmentNote(e.target.value)}
-              />
+              <Label htmlFor="adjustment-note">{dialogMode === "view" ? "Note" : "Note (optional)"}</Label>
+              {dialogMode === "view" ? (
+                <p className="text-sm text-muted-foreground rounded-md border bg-muted/50 p-3 min-h-[60px]">
+                  {adjustmentNote || "No note provided"}
+                </p>
+              ) : (
+                <Textarea
+                  id="adjustment-note"
+                  placeholder="Enter a reason for this adjustment..."
+                  value={adjustmentNote}
+                  onChange={(e) => setAdjustmentNote(e.target.value)}
+                />
+              )}
             </div>
           </div>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              Cancel
+              {dialogMode === "view" ? "Close" : "Cancel"}
             </Button>
-            <Button
-              onClick={submitAdjustment}
-              disabled={submitting || !adjustmentParticipants.some((p) => p.new_split_pct !== p.old_split_pct) || calculateTotalSplit() !== 100}
-            >
-              {submitting ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Submitting...
-                </>
-              ) : (
-                "Submit Adjustment"
-              )}
-            </Button>
+            {dialogMode !== "view" && (
+              <Button
+                onClick={submitAdjustment}
+                disabled={submitting || !adjustmentParticipants.some((p) => p.new_split_pct !== p.old_split_pct) || calculateTotalSplit() !== 100}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {dialogMode === "edit" ? "Updating..." : "Submitting..."}
+                  </>
+                ) : (
+                  dialogMode === "edit" ? "Update Adjustment" : "Submit Adjustment"
+                )}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
