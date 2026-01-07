@@ -334,6 +334,15 @@ export default function AdjustmentsPage() {
       return next
     })
 
+    // If expanding, fetch net_residual for this deal's MID (for history display calculations)
+    if (!expandedDeals.has(dealId)) {
+      const deal = deals.find(d => d.id === dealId)
+      if (deal?.mid && !netResidualCache[deal.mid]) {
+        // Fetch and cache net_residual for this MID
+        fetchNetResidualForMid(deal.mid)
+      }
+    }
+
     // If expanding and we don't have history loaded yet, fetch it
     if (!expandedDeals.has(dealId) && adjustmentHistory.length === 0) {
       setDealHistoryLoading((prev) => new Set(prev).add(dealId))
@@ -368,6 +377,7 @@ export default function AdjustmentsPage() {
                 return {
                   id: a.id,
                   type: "adjustment" as const,
+                  entity_id: a.entity_id, // Include for deal lookup
                   deal_id: a.new_data?.deal_id || a.entity_id,
                   participant_id: a.new_data?.participant_id || a.new_data?.partner_airtable_id || "",
                   participant_name: a.new_data?.participant_name || a.new_data?.partner_name || a.entity_name || "",
@@ -378,6 +388,7 @@ export default function AdjustmentsPage() {
                   note: a.new_data?.note || a.description || "",
                   status: a.new_data?.status || "confirmed",
                   created_at: a.created_at,
+                  new_data: a.new_data, // Include full new_data for net_residual lookup
                 }
               }
             })
@@ -393,7 +404,7 @@ export default function AdjustmentsPage() {
         })
       }
     }
-  }, [expandedDeals, adjustmentHistory.length])
+  }, [expandedDeals, adjustmentHistory.length, deals, netResidualCache, fetchNetResidualForMid])
 
   // Get adjustments for a specific deal, grouped by adjustment batch (same timestamp + status)
   // Note: We don't include the note in the grouping key because when users don't provide a note,
@@ -616,6 +627,7 @@ export default function AdjustmentsPage() {
                 return {
                   id: a.id,
                   type: "adjustment" as const,
+                  entity_id: a.entity_id, // Include for deal lookup
                   deal_id: a.new_data?.deal_id || a.entity_id,
                   participant_id: a.new_data?.participant_id || a.new_data?.partner_airtable_id || "",
                   participant_name: a.new_data?.participant_name || a.new_data?.partner_name || a.entity_name || "",
@@ -626,6 +638,7 @@ export default function AdjustmentsPage() {
                   note: a.new_data?.note || a.description || "",
                   status: a.new_data?.status || "confirmed", // Default to confirmed for legacy entries
                   created_at: a.created_at,
+                  new_data: a.new_data, // Include full new_data for net_residual lookup
                 }
               }
             })
@@ -788,6 +801,46 @@ export default function AdjustmentsPage() {
 
     return () => observer.disconnect()
   }, [historyHasMore, historyLoading, loadingMore, fetchHistory]) // Changed from fetchAdjustmentHistory
+
+  // Pre-fetch net_residuals for all unique MIDs in adjustment history
+  // This populates the cache so calculateAdjustmentDollarAmount can use it
+  useEffect(() => {
+    const fetchMissingNetResiduals = async () => {
+      // Collect unique MIDs from history that aren't cached yet
+      const midsToFetch = new Set<string>()
+
+      adjustmentHistory.forEach((item) => {
+        if (item.type !== "adjustment") return
+
+        // Try to get MID from new_data or from deals lookup
+        const mid = item.new_data?.mid
+        if (mid && netResidualCache[mid] === undefined) {
+          midsToFetch.add(mid)
+        } else if (!mid) {
+          // Try to look up MID from deals
+          const dealId = item.entity_id || item.deal_id
+          if (dealId) {
+            const deal = deals.find(d => d.id === dealId)
+            if (deal?.mid && netResidualCache[deal.mid] === undefined) {
+              midsToFetch.add(deal.mid)
+            }
+          }
+        }
+      })
+
+      if (midsToFetch.size > 0) {
+        console.log("[v0] Pre-fetching net_residuals for MIDs:", Array.from(midsToFetch))
+        // Fetch net_residual for each MID (in parallel)
+        const fetchPromises = Array.from(midsToFetch).map(mid => fetchNetResidualForMid(mid))
+        const results = await Promise.all(fetchPromises)
+        console.log("[v0] Fetched net_residuals:", Array.from(midsToFetch).map((mid, i) => ({ mid, netResidual: results[i] })))
+      }
+    }
+
+    if (adjustmentHistory.length > 0) {
+      fetchMissingNetResiduals()
+    }
+  }, [adjustmentHistory, deals, netResidualCache, fetchNetResidualForMid])
 
   const openAdjustmentDialog = async (deal: Deal) => {
     console.log("[v0] Opening adjustment dialog for deal:", {
@@ -1140,7 +1193,7 @@ export default function AdjustmentsPage() {
   }
 
   // Calculate the dollar amount for an adjustment from stored data or percentage
-  // Prioritizes: stored net_residual * percentage, then stored adjustment_amount, then percentage
+  // Prioritizes: stored net_residual, cached net_residual, then falls back
   const calculateAdjustmentDollarAmount = (adjustment: HistoryItem): number => {
     const oldSplit = adjustment.old_split_pct ?? adjustment.new_data?.old_split_pct ?? 0
     const newSplit = adjustment.new_split_pct ?? adjustment.new_data?.new_split_pct ?? 0
@@ -1152,7 +1205,22 @@ export default function AdjustmentsPage() {
       return storedNetResidual * (splitDifference / 100)
     }
 
-    // Second try: check if adjustment_amount looks like a dollar value (not a percentage)
+    // Second try: look up MID from stored data or from deals, then check cache
+    const mid = adjustment.new_data?.mid
+    if (mid && netResidualCache[mid] && netResidualCache[mid] !== 0) {
+      return netResidualCache[mid] * (splitDifference / 100)
+    }
+
+    // Third try: look up deal by entity_id to get MID, then check cache
+    const dealId = adjustment.entity_id || adjustment.new_data?.deal_id
+    if (dealId) {
+      const deal = deals.find(d => d.id === dealId)
+      if (deal?.mid && netResidualCache[deal.mid] && netResidualCache[deal.mid] !== 0) {
+        return netResidualCache[deal.mid] * (splitDifference / 100)
+      }
+    }
+
+    // Fourth try: check if adjustment_amount looks like a dollar value (not a percentage)
     // Dollar values are typically > 10 or have decimals, percentages are typically small integers
     const storedAmount = adjustment.adjustment_amount ?? adjustment.new_data?.adjustment_amount ?? 0
     const looksLikeDollarAmount = Math.abs(storedAmount) > 10 || (storedAmount !== 0 && storedAmount % 1 !== 0)
@@ -1592,20 +1660,16 @@ export default function AdjustmentsPage() {
                     const isLoadingHistory = dealHistoryLoading.has(deal.id)
                     const adjustmentGroups = getDealAdjustmentGroups(deal.id)
 
-                    // Use summary data for badges when full history isn't loaded yet
-                    // This ensures badges show immediately on page load
+                    // Use summary data for pending badge when full history isn't loaded yet
+                    // This ensures badge shows immediately on page load
                     const summaryData = adjustmentSummary[deal.id]
                     const hasFullHistory = adjustmentGroups.length > 0
 
-                    // If we have full history loaded, use that for accurate counts
+                    // If we have full history loaded, use that for accurate pending count
                     // Otherwise, fall back to the lightweight summary
-                    const totalAdjustmentCount = hasFullHistory
-                      ? adjustmentGroups.length
-                      : (summaryData?.total || 0)
                     const pendingCount = hasFullHistory
                       ? adjustmentGroups.filter((g) => g.status === "pending").length
                       : (summaryData?.pending || 0)
-                    const totalParticipantAdjustments = adjustmentGroups.reduce((sum, g) => sum + g.participants.length, 0)
 
                     return (
                       <Collapsible
@@ -1633,27 +1697,14 @@ export default function AdjustmentsPage() {
                                     Pending
                                   </Badge>
                                 )}
-                                {totalAdjustmentCount > 0 && (
+                                {pendingCount > 0 && (
                                   <Badge
-                                    variant="secondary"
-                                    className={cn(
-                                      "text-xs gap-1.5",
-                                      pendingCount > 0 && "bg-amber-100 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300"
-                                    )}
-                                    title={hasFullHistory
-                                      ? `${adjustmentGroups.length} adjustment${adjustmentGroups.length !== 1 ? "s" : ""} (${totalParticipantAdjustments} change${totalParticipantAdjustments !== 1 ? "s" : ""})${pendingCount > 0 ? ` · ${pendingCount} pending` : ""}`
-                                      : `${totalAdjustmentCount} adjustment${totalAdjustmentCount !== 1 ? "s" : ""}${pendingCount > 0 ? ` · ${pendingCount} pending` : ""}`
-                                    }
+                                    variant="outline"
+                                    className="text-xs gap-1 bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
+                                    title={`${pendingCount} pending adjustment${pendingCount !== 1 ? "s" : ""}`}
                                   >
-                                    <History className="h-3 w-3" />
-                                    <span>{totalAdjustmentCount}</span>
-                                    {pendingCount > 0 && (
-                                      <>
-                                        <span className="text-muted-foreground">·</span>
-                                        <Clock className="h-3 w-3" />
-                                        <span>{pendingCount}</span>
-                                      </>
-                                    )}
+                                    <Clock className="h-3 w-3" />
+                                    <span>{pendingCount}</span>
                                   </Badge>
                                 )}
                               </div>
