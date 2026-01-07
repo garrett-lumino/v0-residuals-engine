@@ -47,11 +47,13 @@ export async function POST(request: NextRequest) {
     // Update each record's new_data.status to "confirmed"
     let confirmedCount = 0
     const errors: string[] = []
+    const confirmedAt = new Date().toISOString()
 
     for (const record of records) {
       const updatedNewData = {
         ...record.new_data,
         status: "confirmed",
+        confirmed_at: confirmedAt,
       }
 
       const { error: updateError } = await supabase

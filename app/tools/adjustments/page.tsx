@@ -192,6 +192,7 @@ interface AdjustmentGroup {
   status: "pending" | "confirmed"
   adjustment_type: "clawback" | "additional" | "mixed"
   participants: HistoryItem[]
+  confirmed_at?: string // Timestamp when adjustment was confirmed
 }
 
 export default function AdjustmentsPage() {
@@ -439,13 +440,19 @@ export default function AdjustmentsPage() {
       const hasAdditional = participants.some((p) => p.adjustment_type === "additional")
       const adjustmentType = hasClawback && hasAdditional ? "mixed" : hasClawback ? "clawback" : "additional"
 
+      // For confirmed_at: prefer new_data.confirmed_at, fall back to created_at for legacy records
+      const status = (first.status || "confirmed") as "pending" | "confirmed"
+      // Legacy records (pre-pending workflow) were confirmed at creation, so use created_at as fallback
+      const confirmedAt = first.new_data?.confirmed_at || (status === "confirmed" ? first.created_at : undefined)
+
       return {
         id: key, // Use group key as unique ID
         created_at: first.created_at,
         note: first.note || "",
-        status: (first.status || "confirmed") as "pending" | "confirmed",
+        status,
         adjustment_type: adjustmentType,
         participants,
+        confirmed_at: confirmedAt, // Include confirmation timestamp (or created_at fallback for legacy)
       }
     })
 
@@ -500,13 +507,19 @@ export default function AdjustmentsPage() {
       const hasAdditional = participants.some((p) => p.adjustment_type === "additional")
       const adjustmentType = hasClawback && hasAdditional ? "mixed" : hasClawback ? "clawback" : "additional"
 
+      // For confirmed_at: prefer new_data.confirmed_at, fall back to created_at for legacy records
+      const status = (first.status || "confirmed") as "pending" | "confirmed"
+      // Legacy records (pre-pending workflow) were confirmed at creation, so use created_at as fallback
+      const confirmedAt = first.new_data?.confirmed_at || (status === "confirmed" ? first.created_at : undefined)
+
       return {
         id: key,
         created_at: first.created_at,
         note: first.note || "",
-        status: (first.status || "confirmed") as "pending" | "confirmed",
+        status,
         adjustment_type: adjustmentType,
         participants,
+        confirmed_at: confirmedAt, // Include confirmation timestamp (or created_at fallback for legacy)
         // Include deal info for display
         deal_id: first.deal_id,
       } as AdjustmentGroup & { deal_id?: string }
@@ -1862,27 +1875,46 @@ export default function AdjustmentsPage() {
                                                 >
                                                   {group.adjustment_type}
                                                 </Badge>
-                                                <Badge
-                                                  variant={group.status === "pending" ? "outline" : "secondary"}
-                                                  className={cn(
-                                                    "text-xs",
-                                                    group.status === "pending"
-                                                      ? "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
-                                                      : "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300"
+                                                <div className="flex items-center gap-1.5">
+                                                  <Badge
+                                                    variant={group.status === "pending" ? "outline" : "secondary"}
+                                                    className={cn(
+                                                      "text-xs",
+                                                      group.status === "pending"
+                                                        ? "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
+                                                        : "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300"
+                                                    )}
+                                                  >
+                                                    {group.status === "pending" ? (
+                                                      <>
+                                                        <Clock className="mr-1 h-3 w-3" />
+                                                        Pending
+                                                      </>
+                                                    ) : (
+                                                      <>
+                                                        <Check className="mr-1 h-3 w-3" />
+                                                        Confirmed
+                                                      </>
+                                                    )}
+                                                  </Badge>
+                                                  {group.status === "confirmed" && group.confirmed_at && (
+                                                    <div className="flex flex-col text-[10px] text-muted-foreground leading-tight" title={new Date(group.confirmed_at).toLocaleString()}>
+                                                      <span>
+                                                        {new Date(group.confirmed_at).toLocaleTimeString("en-US", {
+                                                          hour: "numeric",
+                                                          minute: "2-digit",
+                                                        })}
+                                                      </span>
+                                                      <span>
+                                                        {new Date(group.confirmed_at).toLocaleDateString("en-US", {
+                                                          month: "2-digit",
+                                                          day: "2-digit",
+                                                          year: "numeric",
+                                                        })}
+                                                      </span>
+                                                    </div>
                                                   )}
-                                                >
-                                                  {group.status === "pending" ? (
-                                                    <>
-                                                      <Clock className="mr-1 h-3 w-3" />
-                                                      Pending
-                                                    </>
-                                                  ) : (
-                                                    <>
-                                                      <Check className="mr-1 h-3 w-3" />
-                                                      Confirmed
-                                                    </>
-                                                  )}
-                                                </Badge>
+                                                </div>
                                                 {/* Group-level Edit/View actions */}
                                                 {group.status === "pending" && firstParticipant?.deal_id ? (
                                                   <Button
@@ -2539,27 +2571,46 @@ export default function AdjustmentsPage() {
                                 >
                                   {group.adjustment_type}
                                 </Badge>
-                                <Badge
-                                  variant={group.status === "pending" ? "outline" : "secondary"}
-                                  className={cn(
-                                    "text-xs",
-                                    group.status === "pending"
-                                      ? "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
-                                      : "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300"
+                                <div className="flex items-center gap-1.5">
+                                  <Badge
+                                    variant={group.status === "pending" ? "outline" : "secondary"}
+                                    className={cn(
+                                      "text-xs",
+                                      group.status === "pending"
+                                        ? "bg-amber-50 text-amber-700 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300"
+                                        : "bg-green-50 text-green-700 dark:bg-green-950/50 dark:text-green-300"
+                                    )}
+                                  >
+                                    {group.status === "pending" ? (
+                                      <>
+                                        <Clock className="mr-1 h-3 w-3" />
+                                        Pending
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Check className="mr-1 h-3 w-3" />
+                                        Confirmed
+                                      </>
+                                    )}
+                                  </Badge>
+                                  {group.status === "confirmed" && group.confirmed_at && (
+                                    <div className="flex flex-col text-[10px] text-muted-foreground leading-tight" title={new Date(group.confirmed_at).toLocaleString()}>
+                                      <span>
+                                        {new Date(group.confirmed_at).toLocaleTimeString("en-US", {
+                                          hour: "numeric",
+                                          minute: "2-digit",
+                                        })}
+                                      </span>
+                                      <span>
+                                        {new Date(group.confirmed_at).toLocaleDateString("en-US", {
+                                          month: "2-digit",
+                                          day: "2-digit",
+                                          year: "numeric",
+                                        })}
+                                      </span>
+                                    </div>
                                   )}
-                                >
-                                  {group.status === "pending" ? (
-                                    <>
-                                      <Clock className="mr-1 h-3 w-3" />
-                                      Pending
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Check className="mr-1 h-3 w-3" />
-                                      Confirmed
-                                    </>
-                                  )}
-                                </Badge>
+                                </div>
                                 {/* Edit/View button */}
                                 {group.status === "pending" && firstParticipant?.deal_id ? (
                                   <Button

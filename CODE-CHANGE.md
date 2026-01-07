@@ -1,6 +1,54 @@
 # Code Change Log
 
 
+## 2026-01-07 (Confirmed Badge Shows Confirmation Timestamp)
+
+### Files Changed
+- `app/api/adjustments/confirm/route.ts`
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Enhanced "Confirmed" status badges in adjustment history to display the confirmation timestamp when available.
+
+### Details
+**Backend Changes:**
+
+1. **Updated confirm API** (`app/api/adjustments/confirm/route.ts`)
+   - Now stores `confirmed_at` timestamp in `new_data` when confirming adjustments
+   - Uses ISO 8601 format for consistency
+
+**Frontend Changes:**
+
+1. **Updated `AdjustmentGroup` interface** (line 195)
+   - Added optional `confirmed_at?: string` field for confirmation timestamp
+
+2. **Updated grouping logic for Create tab** (line 451)
+   - Added `confirmed_at: first.new_data?.confirmed_at` to group creation
+
+3. **Updated grouping logic for History tab** (line 513)
+   - Added `confirmed_at: first.new_data?.confirmed_at` to group creation
+
+4. **Enhanced Confirmed badge in Create tab** (lines 1868-1898)
+   - Wrapped badge in a flex container with gap
+   - Added confirmation time display next to badge (e.g., "2:34 PM")
+   - Time only shows if `confirmed_at` exists
+   - Full timestamp shown on hover via `title` attribute
+
+5. **Enhanced Confirmed badge in History tab** (lines 2555-2586)
+   - Same enhancement as Create tab
+   - Shows time in compact format next to badge
+   - Hover shows full date/time
+
+**Visual Design:**
+- Confirmation time uses `text-[10px]` for subtle, compact display
+- Uses `text-muted-foreground` for secondary styling
+- Doesn't affect Pending badges (only confirmed adjustments)
+- Falls back gracefully if `confirmed_at` is missing (for previously confirmed adjustments)
+
+**Note:** Previously confirmed adjustments won't show the timestamp since `confirmed_at` wasn't stored before this change. Only newly confirmed adjustments will display the time.
+
+---
+
 ## 2026-01-07 (Pending Tab Row Click Opens View Dialog)
 
 ### Files Changed
