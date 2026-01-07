@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect, useCallback, useRef, useMemo } from "react"
+import { useUser } from "@clerk/nextjs"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
@@ -49,6 +50,8 @@ import {
   ChevronRight,
   RotateCcw,
   CheckCircle2,
+  RefreshCw,
+  XCircle,
 } from "lucide-react"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -77,6 +80,8 @@ interface Deal {
   }>
   is_pending?: boolean
   pending_event_ids?: string[]
+  created_at?: string
+  updated_at?: string
 }
 
 interface Adjustment {
@@ -125,6 +130,7 @@ interface HistoryItem {
   id: string
   type: "adjustment" | "merge"
   created_at: string
+  entity_id?: string // For linking back to the deal
   // Adjustment specific
   deal_id?: string
   participant_id?: string
@@ -140,6 +146,29 @@ interface HistoryItem {
   target_name?: string
   records_updated?: number
   description?: string
+  // Raw action_history data (for expandable history)
+  new_data?: {
+    is_adjustment?: boolean
+    confirmation_status?: "pending" | "confirmed" | "rejected"
+    confirmed_at?: string
+    confirmed_by?: { name: string; email: string }
+    rejected_at?: string
+    undone_at?: string
+    rejection_reason?: string
+    created_by?: { name: string; email: string }
+    deal_id?: string
+    merchant_name?: string
+    mid?: string
+    net_residual?: number // Stored net_residual for calculating dollar amounts
+    participant_id?: string
+    participant_name?: string
+    old_split_pct?: number
+    new_split_pct?: number
+    adjustment_amount?: number
+    adjustment_type?: "clawback" | "additional"
+    note?: string
+    status?: "pending" | "confirmed"
+  }
 }
 
 // Interface for managing adjustment participants in the dialog
@@ -167,6 +196,22 @@ interface AdjustmentGroup {
 
 export default function AdjustmentsPage() {
   const { toast } = useToast()
+
+  // Get current user for tracking who created adjustments (optional - may not be in ClerkProvider on localhost)
+  let currentUserInfo: { name: string; email: string } | null = null
+  try {
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    const { user } = useUser()
+    if (user) {
+      currentUserInfo = {
+        name: user.fullName || user.firstName || "Unknown",
+        email: user.emailAddresses?.[0]?.emailAddress || "",
+      }
+    }
+  } catch {
+    // ClerkProvider not available (localhost dev mode)
+  }
+
   const [activeTab, setActiveTab] = useState("create")
   const [searchQuery, setSearchQuery] = useState("")
   const [deals, setDeals] = useState<Deal[]>([])
@@ -183,6 +228,7 @@ export default function AdjustmentsPage() {
   const [adjustmentSplits, setAdjustmentSplits] = useState<AdjustmentSplit[]>([]) // Kept for backward compatibility / might be used elsewhere
   const [adjustmentParticipants, setAdjustmentParticipants] = useState<AdjustmentParticipant[]>([]) // New state for managing dialog participants
   const [submitting, setSubmitting] = useState(false)
+  const [dealNetResidual, setDealNetResidual] = useState<number | null>(null) // Net residual amount from payouts
 
   // Dialog mode state for create/edit/view workflow
   const [dialogMode, setDialogMode] = useState<DialogMode>("create")
@@ -227,6 +273,41 @@ export default function AdjustmentsPage() {
 
   // Adjustment summary for badges (lightweight counts per deal)
   const [adjustmentSummary, setAdjustmentSummary] = useState<Record<string, { total: number; pending: number }>>({})
+
+  // Cache of net_residual values per MID for calculating dollar amounts in history
+  const [netResidualCache, setNetResidualCache] = useState<Record<string, number>>({})
+
+  // Fetch net_residual for a MID and cache it
+  const fetchNetResidualForMid = useCallback(async (mid: string): Promise<number> => {
+    // Check cache first
+    if (netResidualCache[mid] !== undefined) {
+      return netResidualCache[mid]
+    }
+
+    try {
+      const response = await fetch(`/api/residuals/payouts?format=raw&mid=${encodeURIComponent(mid)}`)
+      const data = await response.json()
+
+      if (data.success && data.payouts && data.payouts.length > 0) {
+        // Find the first payout with a non-zero net_residual
+        const residualPayout = data.payouts.find((p: any) =>
+          p.net_residual && p.net_residual !== 0
+        ) || data.payouts.find((p: any) =>
+          p.payout_type === 'residual' || !p.payout_type
+        ) || data.payouts[0]
+
+        const netResidual = residualPayout?.net_residual || 0
+
+        // Cache the result
+        setNetResidualCache(prev => ({ ...prev, [mid]: netResidual }))
+        return netResidual
+      }
+    } catch (error) {
+      console.error("[v0] Failed to fetch net residual for MID:", mid, error)
+    }
+
+    return 0
+  }, [netResidualCache])
 
   // Pending tab state
   const [pendingSearch, setPendingSearch] = useState("")
@@ -708,7 +789,7 @@ export default function AdjustmentsPage() {
     return () => observer.disconnect()
   }, [historyHasMore, historyLoading, loadingMore, fetchHistory]) // Changed from fetchAdjustmentHistory
 
-  const openAdjustmentDialog = (deal: Deal) => {
+  const openAdjustmentDialog = async (deal: Deal) => {
     console.log("[v0] Opening adjustment dialog for deal:", {
       id: deal.id,
       deal_id: deal.deal_id,
@@ -718,6 +799,8 @@ export default function AdjustmentsPage() {
     setDialogMode("create")
     setEditingAdjustmentIds([])
     setSelectedDeal(deal)
+    setDealNetResidual(null) // Reset while loading
+
     // Filter out 0% participants - they shouldn't appear in adjustments
     const activeParticipants = (deal.participants_json || []).filter((p) => p.split_pct > 0)
     setAdjustmentParticipants(
@@ -733,6 +816,40 @@ export default function AdjustmentsPage() {
     setAdjustmentNote("")
     setDialogOpen(true) // Renamed from setShowAdjustmentDialog
     fetchPartners()
+
+    // Fetch net residual from payouts for this deal
+    // We need to find the original residual payout (not adjustment payouts) to get the actual net_residual
+    try {
+      const url = `/api/residuals/payouts?format=raw&mid=${encodeURIComponent(deal.mid)}`
+      console.log("[v0] Fetching net residual from:", url)
+      const response = await fetch(url)
+      const data = await response.json()
+
+      if (data.success && data.payouts && data.payouts.length > 0) {
+        // Find the first payout with a non-zero net_residual (original residual payout)
+        // Adjustment/clawback payouts typically have net_residual = 0
+        const residualPayout = data.payouts.find((p: any) =>
+          p.net_residual && p.net_residual !== 0
+        ) || data.payouts.find((p: any) =>
+          p.payout_type === 'residual' || !p.payout_type
+        ) || data.payouts[0]
+
+        const netResidual = residualPayout?.net_residual || 0
+        console.log("[v0] Payouts API response:", {
+          success: data.success,
+          payoutsCount: data.payouts?.length,
+          payoutTypes: [...new Set(data.payouts.map((p: any) => p.payout_type))],
+          selectedPayout: residualPayout,
+          netResidual
+        })
+        console.log("[v0] Setting dealNetResidual to:", netResidual)
+        setDealNetResidual(netResidual)
+      } else {
+        console.log("[v0] No payouts found for MID:", deal.mid)
+      }
+    } catch (error) {
+      console.error("[v0] Failed to fetch net residual:", error)
+    }
   }
 
   /**
@@ -891,9 +1008,23 @@ export default function AdjustmentsPage() {
       // NOTE: Using entity_type "deal" instead of "adjustment" because "adjustment"
       // is not yet in the database check constraint. The adjustment details are
       // stored in new_data with adjustment_type to distinguish from regular deal updates.
+      console.log("[v0] Saving adjustments with dealNetResidual:", dealNetResidual)
       for (const participant of adjustmentParticipants) {
-        const adjustmentAmount = participant.new_split_pct - participant.old_split_pct
-        if (adjustmentAmount !== 0) {
+        const splitDifference = participant.new_split_pct - participant.old_split_pct
+        if (splitDifference !== 0) {
+          // Calculate actual dollar amount using net_residual
+          // adjustment_amount = net_residual * (percentage_change / 100)
+          const dollarAmount = dealNetResidual !== null
+            ? dealNetResidual * (splitDifference / 100)
+            : splitDifference // Fallback to percentage if no net_residual
+
+          console.log("[v0] Participant adjustment:", {
+            name: participant.partner_name,
+            splitDifference,
+            dealNetResidual,
+            dollarAmount
+          })
+
           await fetch("/api/history", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -907,16 +1038,18 @@ export default function AdjustmentsPage() {
               },
               new_data: {
                 deal_id: selectedDeal.id, // Use selectedDeal.id (UUID)
+                mid: selectedDeal.mid, // Store MID for looking up net_residual in history
+                net_residual: dealNetResidual, // Store net_residual for calculating dollar amounts
                 participant_id: participant.partner_airtable_id,
                 participant_name: participant.partner_name,
                 old_split_pct: participant.old_split_pct,
                 new_split_pct: participant.new_split_pct,
-                adjustment_amount: adjustmentAmount,
-                adjustment_type: adjustmentAmount < 0 ? "clawback" : "additional",
+                adjustment_amount: dollarAmount,
+                adjustment_type: dollarAmount < 0 ? "clawback" : "additional",
                 note: adjustmentNote,
                 status: "pending", // All new adjustments start as pending
               },
-              description: `${dialogMode === "edit" ? "Updated" : "Adjusted"} ${participant.partner_name}'s split from ${participant.old_split_pct}% to ${participant.new_split_pct}% (${adjustmentAmount > 0 ? "+" : ""}${adjustmentAmount}%)`,
+              description: `${dialogMode === "edit" ? "Updated" : "Adjusted"} ${participant.partner_name}'s split from ${participant.old_split_pct}% to ${participant.new_split_pct}% (${dollarAmount >= 0 ? "+" : ""}$${Math.abs(dollarAmount).toFixed(2)})`,
             }),
           })
         }
@@ -1004,6 +1137,32 @@ export default function AdjustmentsPage() {
     a.download = `adjustments-report-${Date.now()}.json`
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  // Calculate the dollar amount for an adjustment from stored data or percentage
+  // Prioritizes: stored net_residual * percentage, then stored adjustment_amount, then percentage
+  const calculateAdjustmentDollarAmount = (adjustment: HistoryItem): number => {
+    const oldSplit = adjustment.old_split_pct ?? adjustment.new_data?.old_split_pct ?? 0
+    const newSplit = adjustment.new_split_pct ?? adjustment.new_data?.new_split_pct ?? 0
+    const splitDifference = newSplit - oldSplit
+
+    // First try: use stored net_residual to calculate accurate dollar amount
+    const storedNetResidual = adjustment.new_data?.net_residual
+    if (storedNetResidual && storedNetResidual !== 0) {
+      return storedNetResidual * (splitDifference / 100)
+    }
+
+    // Second try: check if adjustment_amount looks like a dollar value (not a percentage)
+    // Dollar values are typically > 10 or have decimals, percentages are typically small integers
+    const storedAmount = adjustment.adjustment_amount ?? adjustment.new_data?.adjustment_amount ?? 0
+    const looksLikeDollarAmount = Math.abs(storedAmount) > 10 || (storedAmount !== 0 && storedAmount % 1 !== 0)
+    if (looksLikeDollarAmount) {
+      return storedAmount
+    }
+
+    // Fallback: the stored amount is probably just the percentage difference
+    // Return it but it will display incorrectly as $X.00
+    return storedAmount
   }
 
   const formatCurrency = (amount: number) => {
@@ -1717,15 +1876,20 @@ export default function AdjustmentsPage() {
                                                     </Badge>
                                                   </div>
                                                   <div className="flex items-center gap-2">
-                                                    <span
-                                                      className={cn(
-                                                        "text-sm font-medium",
-                                                        (adjustment.adjustment_amount ?? 0) >= 0 ? "text-green-600" : "text-red-600"
-                                                      )}
-                                                    >
-                                                      {(adjustment.adjustment_amount ?? 0) >= 0 ? "+" : ""}
-                                                      <MoneyDisplay amount={adjustment.adjustment_amount ?? 0} />
-                                                    </span>
+                                                    {(() => {
+                                                      const dollarAmount = calculateAdjustmentDollarAmount(adjustment)
+                                                      return (
+                                                        <span
+                                                          className={cn(
+                                                            "text-sm font-medium",
+                                                            dollarAmount >= 0 ? "text-green-600" : "text-red-600"
+                                                          )}
+                                                        >
+                                                          {dollarAmount >= 0 ? "+" : ""}
+                                                          <MoneyDisplay amount={dollarAmount} />
+                                                        </span>
+                                                      )
+                                                    })()}
                                                   </div>
                                                 </div>
                                               ))}
@@ -2381,15 +2545,20 @@ export default function AdjustmentsPage() {
                                     </Badge>
                                   </div>
                                   <div className="flex items-center gap-2">
-                                    <span
-                                      className={cn(
-                                        "text-sm font-medium",
-                                        (adjustment.adjustment_amount ?? 0) >= 0 ? "text-green-600" : "text-red-600"
-                                      )}
-                                    >
-                                      {(adjustment.adjustment_amount ?? 0) >= 0 ? "+" : ""}
-                                      <MoneyDisplay amount={adjustment.adjustment_amount ?? 0} />
-                                    </span>
+                                    {(() => {
+                                      const dollarAmount = calculateAdjustmentDollarAmount(adjustment)
+                                      return (
+                                        <span
+                                          className={cn(
+                                            "text-sm font-medium",
+                                            dollarAmount >= 0 ? "text-green-600" : "text-red-600"
+                                          )}
+                                        >
+                                          {dollarAmount >= 0 ? "+" : ""}
+                                          <MoneyDisplay amount={dollarAmount} />
+                                        </span>
+                                      )
+                                    })()}
                                   </div>
                                 </div>
                               ))}
@@ -2413,10 +2582,10 @@ export default function AdjustmentsPage() {
         </TabsContent>
       </Tabs>
 
-      {/* Adjustment Dialog */}
+      {/* Adjustment Dialog - Two-Column Layout with Payout Metrics */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
+        <DialogContent className="sm:max-w-5xl max-h-[90vh] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0">
             <DialogTitle>
               {dialogMode === "create" && `Create Adjustment for ${selectedDeal?.deal_id}`}
               {dialogMode === "edit" && `Edit Adjustment for ${selectedDeal?.deal_id}`}
@@ -2429,39 +2598,144 @@ export default function AdjustmentsPage() {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4">
-            {/* Summary */}
+          <div className="flex-1 overflow-y-auto space-y-4 py-2">
+            {/* Two-Column Summary Section */}
             <div className="rounded-lg border bg-muted/50 p-4">
-              <h4 className="mb-2 text-sm font-medium">Adjustment Summary</h4>
-              <div className="grid grid-cols-4 gap-4 text-center">
-                <div>
-                  <p className="text-xs text-muted-foreground">Total Split</p>
-                  <p className={cn(
-                    "text-lg font-semibold",
-                    calculateTotalSplit() === 100 ? "text-green-600" : "text-red-600"
-                  )}>
-                    {calculateTotalSplit()}%
-                    {calculateTotalSplit() !== 100 && (
-                      <span className="block text-xs font-normal">Must be 100%</span>
-                    )}
-                  </p>
+              <h4 className="mb-3 text-sm font-medium">Adjustment Summary</h4>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Left Column - Deal Information */}
+                <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+                  {/* Left sub-column: Merchant, Partners, Net Residual */}
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Merchant Name</p>
+                      <p className="font-medium">{selectedDeal?.merchant_name || "Unknown"}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Partners</p>
+                      <div className="space-y-2 mt-1">
+                        {adjustmentParticipants.length > 0
+                          ? adjustmentParticipants
+                              .filter((p) => p.partner_name)
+                              .map((p, idx) => (
+                                <p key={idx} className="font-medium text-sm">
+                                  {p.partner_name}
+                                </p>
+                              ))
+                          : <p className="font-medium text-sm text-muted-foreground">No partners assigned</p>
+                        }
+                      </div>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Net Residual</p>
+                      <p className="font-medium">
+                        {dealNetResidual !== null ? (
+                          <MoneyDisplay amount={dealNetResidual} />
+                        ) : (
+                          <span className="text-muted-foreground">Loading...</span>
+                        )}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Right sub-column: Deal ID, Payout Type, Created, Updated */}
+                  <div className="space-y-3">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Deal ID</p>
+                      <p className="font-mono text-xs">{selectedDeal?.deal_id}</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Payout Type</p>
+                      <Badge variant="outline" className="capitalize mt-1">
+                        {selectedDeal?.payout_type || "residual"}
+                      </Badge>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Created</p>
+                      <p className="font-medium text-sm">
+                        {selectedDeal?.created_at
+                          ? new Date(selectedDeal.created_at).toLocaleDateString()
+                          : "--"}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-muted-foreground">Updated</p>
+                      <p className="font-medium text-sm">
+                        {selectedDeal?.updated_at
+                          ? new Date(selectedDeal.updated_at).toLocaleDateString()
+                          : "--"}
+                      </p>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Net Change</p>
-                  <p className="text-lg font-semibold">{calculateTotalAdjustment().toFixed(2)}%</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Clawbacks</p>
-                  <p className="text-lg font-semibold text-red-600">-{calculateClawbacks().toFixed(2)}%</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Additional</p>
-                  <p className="text-lg font-semibold text-green-600">+{calculateAdditional().toFixed(2)}%</p>
+
+                {/* Right Column - Per-Participant Payout Metrics (Stacked) */}
+                <div className="space-y-4">
+                  {adjustmentParticipants.map((participant) => {
+                    const displayName = participant.partner_name || participant.partner_role || "Unnamed"
+                    const oldPayout = dealNetResidual !== null
+                      ? dealNetResidual * (participant.old_split_pct / 100)
+                      : null
+                    const newPayout = dealNetResidual !== null
+                      ? dealNetResidual * (participant.new_split_pct / 100)
+                      : null
+                    const payoutDifference = oldPayout !== null && newPayout !== null
+                      ? newPayout - oldPayout
+                      : null
+
+                    return (
+                      <div key={participant.index} className="border-b pb-3 last:border-b-0 last:pb-0">
+                        <p className="text-xs font-medium mb-2">{displayName}</p>
+                        <div className="grid grid-cols-3 gap-x-4 text-sm">
+                          <div>
+                            <p className="text-xs text-muted-foreground">Previous Split</p>
+                            <p className="font-semibold">
+                              {oldPayout !== null ? (
+                                <MoneyDisplay amount={oldPayout} />
+                              ) : (
+                                <span className="text-muted-foreground">--</span>
+                              )}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">New Split</p>
+                            <p className="font-semibold">
+                              {newPayout !== null ? (
+                                <MoneyDisplay amount={newPayout} />
+                              ) : (
+                                <span className="text-muted-foreground">--</span>
+                              )}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Difference</p>
+                            <p className={cn(
+                              "font-semibold",
+                              payoutDifference === null || payoutDifference === 0
+                                ? "text-muted-foreground"
+                                : payoutDifference < 0
+                                  ? "text-red-600"
+                                  : "text-green-600"
+                            )}>
+                              {payoutDifference !== null ? (
+                                <>
+                                  {payoutDifference > 0 ? "+" : ""}
+                                  <MoneyDisplay amount={payoutDifference} />
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground">--</span>
+                              )}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
                 </div>
               </div>
             </div>
 
-            {/* Participant Splits */}
+            {/* Participant Splits Table */}
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-medium">Participant Splits</h4>
@@ -2472,152 +2746,160 @@ export default function AdjustmentsPage() {
                   </Button>
                 )}
               </div>
-              {adjustmentParticipants.map(
-                (
-                  participant, // Changed from adjustmentSplits to adjustmentParticipants
-                ) => (
-                  <div key={participant.index} className="rounded-lg border bg-card p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="min-w-[150px]">
+
+              {/* Table Header */}
+              <div className="rounded-lg border">
+                <div className="grid grid-cols-12 gap-2 border-b bg-muted/50 px-3 py-2 text-xs font-medium text-muted-foreground">
+                  <div className="col-span-3">Partner Name</div>
+                  <div className="col-span-2">Role</div>
+                  <div className="col-span-2 text-center">Old Split %</div>
+                  <div className="col-span-2 text-center">New Split %</div>
+                  <div className="col-span-2 text-center">Adjustment %</div>
+                  <div className="col-span-1 text-center">Actions</div>
+                </div>
+
+                {/* Table Body */}
+                {adjustmentParticipants.length === 0 ? (
+                  <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+                    No participants. Click "Add Participant" to add one.
+                  </div>
+                ) : (
+                  adjustmentParticipants.map((participant) => (
+                    <div
+                      key={participant.index}
+                      className="grid grid-cols-12 gap-2 items-center border-b last:border-0 px-3 py-2 text-sm"
+                    >
+                      {/* Partner Name */}
+                      <div className="col-span-3">
                         {!participant.partner_name ? (
-                          <div className="space-y-2">
-                            <Select
-                              value={participant.partner_airtable_id}
-                              onValueChange={(value) =>
-                                updateParticipantDetails(participant.index, "partner_airtable_id", value)
-                              }
-                            >
-                              <SelectTrigger className="w-full">
-                                <SelectValue placeholder="Select partner" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <div className="p-2 border-b sticky top-0 bg-white z-10">
-                                  <Input
-                                    placeholder="Search partners..."
-                                    value={partnerSearchTerm}
-                                    onChange={(e) => setPartnerSearchTerm(e.target.value)}
-                                    className="h-8"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onKeyDown={(e) => e.stopPropagation()}
-                                    autoComplete="off"
-                                  />
-                                </div>
-                                <div className="max-h-[200px] overflow-y-auto">
-                                  {availablePartners
-                                    .filter(
-                                      (p) =>
-                                        !partnerSearchTerm ||
-                                        p.name.toLowerCase().includes(partnerSearchTerm.toLowerCase()) ||
-                                        p.email.toLowerCase().includes(partnerSearchTerm.toLowerCase()),
-                                    )
-                                    .map((partner) => (
-                                      <SelectItem key={partner.id} value={partner.id}>
-                                        <div className="flex flex-col">
-                                          <span className="font-medium">{partner.name}</span>
-                                          <span className="text-xs text-muted-foreground">{partner.email}</span>
-                                        </div>
-                                      </SelectItem>
-                                    ))}
-                                </div>
-                              </SelectContent>
-                            </Select>
-                            <Select
-                              value={participant.partner_role}
-                              onValueChange={(value) => updateParticipantDetails(participant.index, "partner_role", value)}
-                            >
-                              <SelectTrigger className="w-full">
-                                <SelectValue placeholder="Select role" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="Partner">Partner</SelectItem>
-                                <SelectItem value="Sales Rep">Sales Rep</SelectItem>
-                                <SelectItem value="Referral">Referral</SelectItem>
-                                <SelectItem value="ISO">ISO</SelectItem>
-                                <SelectItem value="Agent">Agent</SelectItem>
-                                <SelectItem value="Investor">Investor</SelectItem>
-                                <SelectItem value="Fund I">Fund I</SelectItem>
-                                <SelectItem value="Fund II">Fund II</SelectItem>
-                              </SelectContent>
-                            </Select>
-                          </div>
+                          <Select
+                            value={participant.partner_airtable_id}
+                            onValueChange={(value) =>
+                              updateParticipantDetails(participant.index, "partner_airtable_id", value)
+                            }
+                            disabled={dialogMode === "view"}
+                          >
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="Select partner" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <div className="p-2 border-b sticky top-0 bg-white dark:bg-gray-950 z-10">
+                                <Input
+                                  placeholder="Search partners..."
+                                  value={partnerSearchTerm}
+                                  onChange={(e) => setPartnerSearchTerm(e.target.value)}
+                                  className="h-7 text-xs"
+                                  onClick={(e) => e.stopPropagation()}
+                                  onPointerDown={(e) => e.stopPropagation()}
+                                  onKeyDown={(e) => e.stopPropagation()}
+                                  autoComplete="off"
+                                />
+                              </div>
+                              <div className="max-h-[200px] overflow-y-auto">
+                                {availablePartners
+                                  .filter(
+                                    (p) =>
+                                      !partnerSearchTerm ||
+                                      p.name.toLowerCase().includes(partnerSearchTerm.toLowerCase()) ||
+                                      p.email.toLowerCase().includes(partnerSearchTerm.toLowerCase()),
+                                  )
+                                  .map((partner) => (
+                                    <SelectItem key={partner.id} value={partner.id}>
+                                      <div className="flex flex-col">
+                                        <span className="font-medium text-xs">{partner.name}</span>
+                                        <span className="text-xs text-muted-foreground">{partner.email}</span>
+                                      </div>
+                                    </SelectItem>
+                                  ))}
+                              </div>
+                            </SelectContent>
+                          </Select>
                         ) : (
-                          <div className="space-y-2">
-                            <p className="font-medium">{participant.partner_name}</p>
-                            {dialogMode === "view" ? (
-                              <p className="text-sm text-muted-foreground">{participant.partner_role}</p>
-                            ) : (
-                              <Select
-                                value={participant.partner_role}
-                                onValueChange={(value) => updateParticipantDetails(participant.index, "partner_role", value)}
-                              >
-                                <SelectTrigger className="w-full h-8">
-                                  <SelectValue placeholder="Select role" />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  <SelectItem value="Partner">Partner</SelectItem>
-                                  <SelectItem value="Sales Rep">Sales Rep</SelectItem>
-                                  <SelectItem value="Referral">Referral</SelectItem>
-                                  <SelectItem value="ISO">ISO</SelectItem>
-                                  <SelectItem value="Agent">Agent</SelectItem>
-                                  <SelectItem value="Investor">Investor</SelectItem>
-                                  <SelectItem value="Fund I">Fund I</SelectItem>
-                                  <SelectItem value="Fund II">Fund II</SelectItem>
-                                  <SelectItem value="Company">Company</SelectItem>
-                                </SelectContent>
-                              </Select>
-                            )}
-                          </div>
+                          <span className="font-medium text-sm truncate" title={participant.partner_name}>
+                            {participant.partner_name}
+                          </span>
                         )}
                       </div>
-                      <div className="flex items-center gap-3">
-                        <div className="text-right text-sm">
-                          <p className="text-muted-foreground">Old Split</p>
-                          <p>{participant.old_split_pct}%</p>
-                        </div>
-                        <ArrowRight className="h-4 w-4 text-muted-foreground" />
-                        <div className="w-20">
-                          {dialogMode === "view" ? (
-                            <p className="text-center font-medium">{participant.new_split_pct}%</p>
-                          ) : (
-                            <Input
-                              type="number"
-                              min="0"
-                              max="100"
-                              value={participant.new_split_pct}
-                              onChange={(e) =>
-                                updateParticipantDetails(
-                                  participant.index,
-                                  "new_split_pct",
-                                  Number.parseFloat(e.target.value) || 0,
-                                )
-                              }
-                              className="text-center"
-                            />
-                          )}
-                        </div>
-                        <div className="w-20 text-right">
-                          <p className="text-xs text-muted-foreground">Adjustment</p>
-                          <p
-                            className={cn(
-                              "font-medium",
-                              participant.new_split_pct - participant.old_split_pct === 0
-                                ? "text-muted-foreground"
-                                : participant.new_split_pct - participant.old_split_pct < 0
-                                  ? "text-red-600"
-                                  : "text-green-600",
-                            )}
+
+                      {/* Role */}
+                      <div className="col-span-2">
+                        {dialogMode === "view" ? (
+                          <span className="text-sm">{participant.partner_role}</span>
+                        ) : (
+                          <Select
+                            value={participant.partner_role}
+                            onValueChange={(value) => updateParticipantDetails(participant.index, "partner_role", value)}
                           >
-                            {participant.new_split_pct - participant.old_split_pct > 0 ? "+" : ""}
-                            {(participant.new_split_pct - participant.old_split_pct).toFixed(2)}%
-                          </p>
-                        </div>
+                            <SelectTrigger className="h-8 text-xs">
+                              <SelectValue placeholder="Role" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="Partner">Partner</SelectItem>
+                              <SelectItem value="Sales Rep">Sales Rep</SelectItem>
+                              <SelectItem value="Referral">Referral</SelectItem>
+                              <SelectItem value="ISO">ISO</SelectItem>
+                              <SelectItem value="Agent">Agent</SelectItem>
+                              <SelectItem value="Investor">Investor</SelectItem>
+                              <SelectItem value="Fund I">Fund I</SelectItem>
+                              <SelectItem value="Fund II">Fund II</SelectItem>
+                              <SelectItem value="Company">Company</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </div>
+
+                      {/* Old Split % */}
+                      <div className="col-span-2 text-center">
+                        <span className="text-muted-foreground">{participant.old_split_pct}%</span>
+                      </div>
+
+                      {/* New Split % */}
+                      <div className="col-span-2 flex justify-center">
+                        {dialogMode === "view" ? (
+                          <span className="font-medium">{participant.new_split_pct}%</span>
+                        ) : (
+                          <Input
+                            type="number"
+                            min="0"
+                            max="100"
+                            value={participant.new_split_pct}
+                            onChange={(e) =>
+                              updateParticipantDetails(
+                                participant.index,
+                                "new_split_pct",
+                                Number.parseFloat(e.target.value) || 0,
+                              )
+                            }
+                            className="h-8 w-20 text-center text-xs"
+                          />
+                        )}
+                      </div>
+
+                      {/* Adjustment % */}
+                      <div className="col-span-2 text-center">
+                        <span
+                          className={cn(
+                            "font-medium",
+                            participant.new_split_pct - participant.old_split_pct === 0
+                              ? "text-muted-foreground"
+                              : participant.new_split_pct - participant.old_split_pct < 0
+                                ? "text-red-600"
+                                : "text-green-600",
+                          )}
+                        >
+                          {participant.new_split_pct - participant.old_split_pct > 0 ? "+" : ""}
+                          {(participant.new_split_pct - participant.old_split_pct).toFixed(2)}%
+                        </span>
+                      </div>
+
+                      {/* Actions */}
+                      <div className="col-span-1 flex justify-center">
                         {dialogMode !== "view" && (
                           <Button
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                            className="h-7 w-7 text-destructive hover:text-destructive hover:bg-destructive/10"
                             onClick={() => removeParticipant(participant.index)}
                           >
                             <Trash2 className="h-4 w-4" />
@@ -2625,9 +2907,22 @@ export default function AdjustmentsPage() {
                         )}
                       </div>
                     </div>
-                  </div>
-                ),
-              )}
+                  ))
+                )}
+              </div>
+
+              {/* Total Split Validation */}
+              <div className="flex justify-end">
+                <div className={cn(
+                  "text-sm font-medium px-3 py-1 rounded",
+                  calculateTotalSplit() === 100
+                    ? "text-green-600 bg-green-50 dark:bg-green-950/50"
+                    : "text-red-600 bg-red-50 dark:bg-red-950/50"
+                )}>
+                  Total: {calculateTotalSplit()}%
+                  {calculateTotalSplit() !== 100 && " (Must be 100%)"}
+                </div>
+              </div>
             </div>
 
             {/* Note */}
@@ -2648,7 +2943,7 @@ export default function AdjustmentsPage() {
             </div>
           </div>
 
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button variant="outline" onClick={() => setDialogOpen(false)}>
               {dialogMode === "view" ? "Close" : "Cancel"}
             </Button>

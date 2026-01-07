@@ -1,5 +1,99 @@
 # Code Change Log
 
+## 2026-01-07 (Fix Adjustment History Dollar Amount Display)
+
+### Files Changed
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Fixed adjustment history showing $1.00 instead of correct dollar amounts by dynamically calculating values from net_residual.
+
+### Details
+**Problem:** The adjustment history was displaying $1.00 for all adjustments because the stored `adjustment_amount` was the raw percentage difference (e.g., `1` for a 1% change) rather than the actual dollar amount.
+
+**Solution:**
+1. Added `net_residual` field to HistoryItem interface and store it when saving adjustments
+2. Store `mid` and `net_residual` in adjustment records for future reference
+3. Created `calculateAdjustmentDollarAmount()` helper function that:
+   - First tries to use stored `net_residual * percentage_change`
+   - Falls back to stored `adjustment_amount` if it looks like a dollar value
+   - Returns stored amount as fallback
+4. Updated both history display locations (Create tab and History tab) to use the new calculation function
+
+**Benefit:** Existing adjustment records will still work (fallback logic), and new adjustments will store the net_residual for accurate calculations.
+
+---
+
+## 2026-01-07 (Fix Net Residual Display in Adjustment Dialog)
+
+### Files Changed
+- `app/api/residuals/payouts/route.ts`
+
+### Summary
+Fixed incorrect net residual display by adding missing MID filter to payouts API.
+
+### Details
+**Problem:** The adjustment dialog was showing $1.00 for all payout differences because the `/api/residuals/payouts` endpoint didn't support filtering by MID. When we called `?format=raw&mid=...`, it returned ALL payouts and we took the first one's `net_residual` (from a different deal).
+
+**Solution:** Added `mid` parameter support to the payouts API:
+- Extract `mid` from query params
+- Apply `.eq("mid", mid)` filter to the Supabase query when provided
+
+Now the dialog correctly fetches and displays the net residual for the specific deal being adjusted.
+
+---
+
+## 2026-01-07 (Add Third Column for Payout Difference)
+
+### Files Changed
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Added a third column "Difference" to the per-participant payout metrics showing the dollar difference between old and new splits.
+
+### Details
+- Changed grid from `grid-cols-2` to `grid-cols-3`
+- Added `payoutDifference` calculation: `newPayout - oldPayout`
+- Color-coded: green for positive (additional), red for negative (clawback), muted for zero
+- Displays with `+` prefix for positive values
+
+---
+
+## 2026-01-07 (Improved Adjustment Dialog with Two-Column Layout)
+
+### Files Changed
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Replaced the adjustment dialog with an improved two-column layout that shows deal information and per-participant payout metrics.
+
+### Details
+**New Dialog Features:**
+1. **Two-Column Summary Section:**
+   - Left column: Merchant name, partners list, net residual, deal ID, payout type, created/updated dates
+   - Right column: Per-participant payout metrics showing previous and new split amounts in dollars
+
+2. **Net Residual Integration:**
+   - Added `dealNetResidual` state variable
+   - `openAdjustmentDialog` now fetches net residual from `/api/residuals/payouts` endpoint
+   - Displays actual dollar amounts for each participant's split
+
+3. **Improved Participant Table:**
+   - Converted from card-based layout to a proper table with columns
+   - Columns: Partner Name, Role, Old Split %, New Split %, Adjustment %, Actions
+   - Total split validation displayed at bottom right
+
+4. **Interface Updates:**
+   - Added `entity_id` and `new_data` to `HistoryItem` interface for expanded history support
+   - Added `created_at` and `updated_at` to `Deal` interface
+   - Added `useUser` from Clerk for tracking who creates adjustments
+
+5. **Wider Dialog:**
+   - Changed from `max-w-lg` to `sm:max-w-5xl` for better content display
+   - Added proper overflow handling with `max-h-[90vh]` and scrollable content area
+
+---
+
 ## 2026-01-07 (Pending Badge Loads Immediately on Page Mount)
 
 ### Files Changed

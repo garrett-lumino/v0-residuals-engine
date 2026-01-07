@@ -33,6 +33,7 @@ export async function GET(request: NextRequest) {
     const paidStatus = searchParams.get("status") // 'paid', 'unpaid', 'all'
     const format = searchParams.get("format") // 'raw' or 'summary' (default)
     const csvDataId = searchParams.get("csv_data_id")
+    const mid = searchParams.get("mid") // Filter by MID
     const includeZero = searchParams.get("includeZero") === "true" // New param to optionally include 0% payouts
 
     const supabase = await createClient()
@@ -64,6 +65,10 @@ export async function GET(request: NextRequest) {
 
     if (csvDataId) {
       baseQuery = baseQuery.eq("csv_data_id", csvDataId)
+    }
+
+    if (mid) {
+      baseQuery = baseQuery.eq("mid", mid)
     }
 
     const allPayouts: any[] = []
