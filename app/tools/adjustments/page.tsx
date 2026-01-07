@@ -912,13 +912,14 @@ export default function AdjustmentsPage() {
    */
   const openViewDialogFromHistory = async (
     adjustments: HistoryItem[],
-    dealId: string
+    dealId: string,
+    forceMode?: DialogMode
   ) => {
-    // Determine mode based on adjustment status
+    // Determine mode based on adjustment status, unless forceMode is specified
     const allPending = adjustments.every((a) => a.status === "pending")
-    const mode: DialogMode = allPending ? "edit" : "view"
+    const mode: DialogMode = forceMode ?? (allPending ? "edit" : "view")
 
-    console.log("[v0] Opening dialog from history:", { dealId, mode, adjustmentsCount: adjustments.length })
+    console.log("[v0] Opening dialog from history:", { dealId, mode, forceMode, adjustmentsCount: adjustments.length })
 
     // Find deal in local state or fetch it
     let deal = deals.find((d) => d.id === dealId)
@@ -2078,8 +2079,16 @@ export default function AdjustmentsPage() {
                       {pendingAdjustmentGroups.map((group) => {
                         const firstParticipant = group.participants[0]
                         return (
-                          <TableRow key={group.id} className="bg-amber-50/30 dark:bg-amber-950/10">
-                            <TableCell>
+                          <TableRow
+                            key={group.id}
+                            className="bg-amber-50/30 dark:bg-amber-950/10 cursor-pointer hover:bg-amber-100/50 dark:hover:bg-amber-900/20"
+                            onClick={() => {
+                              if (firstParticipant?.deal_id) {
+                                openViewDialogFromHistory(group.participants, firstParticipant.deal_id, "view")
+                              }
+                            }}
+                          >
+                            <TableCell onClick={(e) => e.stopPropagation()}>
                               <Checkbox
                                 checked={selectedPendingAdjustments.has(group.id)}
                                 onCheckedChange={(checked) => togglePendingSelection(group.id, checked as boolean)}
@@ -2144,7 +2153,7 @@ export default function AdjustmentsPage() {
                                 {group.note || "-"}
                               </span>
                             </TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-2">
                                 <Button
                                   size="sm"

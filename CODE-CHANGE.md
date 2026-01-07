@@ -1,6 +1,38 @@
 # Code Change Log
 
 
+## 2026-01-07 (Pending Tab Row Click Opens View Dialog)
+
+### Files Changed
+- `app/tools/adjustments/page.tsx`
+
+### Summary
+Added click-to-view functionality on pending adjustment rows in the Pending tab, opening a read-only dialog.
+
+### Details
+**Changes Made:**
+
+1. **Updated `openViewDialogFromHistory` function** (lines 913-922)
+   - Added optional `forceMode?: DialogMode` parameter
+   - Mode is now determined by: `forceMode ?? (allPending ? "edit" : "view")`
+   - Allows callers to override automatic mode detection
+
+2. **Made Pending Tab Table Rows Clickable** (lines 2079-2093)
+   - Added `cursor-pointer` and hover styles to `<TableRow>`
+   - Added `onClick` handler that calls `openViewDialogFromHistory` with `"view"` mode
+   - Row click opens the adjustment dialog in read-only view mode
+
+3. **Added Click Event Propagation Control** (lines 2091, 2156)
+   - Checkbox cell: `onClick={(e) => e.stopPropagation()}` prevents row click when toggling selection
+   - Actions cell: `onClick={(e) => e.stopPropagation()}` prevents row click when using Confirm/Edit/Reject buttons
+
+**Behavior:**
+- Clicking anywhere on a pending adjustment row (except checkbox and action buttons) opens the adjustment dialog in "view" mode
+- The Edit button still opens the dialog in "edit" mode (existing behavior preserved)
+- View mode shows all adjustment details read-only with only a Close button
+
+---
+
 ## 2026-01-07 (Post-Payout Adjustments Table UI Improvements)
 
 ### Files Changed
