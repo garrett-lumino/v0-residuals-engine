@@ -1,5 +1,6 @@
 import { createServerClient } from "@/lib/db/server"
 import { NextResponse } from "next/server"
+import { syncPayoutsToAirtable } from "@/lib/services/airtable-sync"
 
 export async function POST(request: Request) {
   try {
@@ -34,17 +35,33 @@ export async function POST(request: Request) {
     const batchSize = 100
     let imported = 0
     let errors = 0
+    const importedIds: string[] = []
 
     for (let i = 0; i < cleanedPayouts.length; i += batchSize) {
       const batch = cleanedPayouts.slice(i, i + batchSize)
 
-      const { error } = await supabase.from("payouts").upsert(batch, { onConflict: "id" })
+      const { data, error } = await supabase
+        .from("payouts")
+        .upsert(batch, { onConflict: "id" })
+        .select("id")
 
       if (error) {
         console.error("[v0] Batch import error:", error)
         errors += batch.length
       } else {
         imported += batch.length
+        if (data) {
+          importedIds.push(...data.map((p) => p.id))
+        }
+      }
+    }
+
+    // Sync imported payouts to Airtable
+    let airtableResult = { synced: 0, error: undefined as string | undefined }
+    if (importedIds.length > 0) {
+      airtableResult = await syncPayoutsToAirtable(importedIds)
+      if (airtableResult.error) {
+        console.error("[v0] Airtable sync failed:", airtableResult.error)
       }
     }
 
@@ -53,6 +70,8 @@ export async function POST(request: Request) {
       imported,
       errors,
       total: payouts.length,
+      airtable_synced: airtableResult.synced,
+      airtable_error: airtableResult.error ? "Sync partially failed" : undefined,
     })
   } catch (error) {
     console.error("[v0] Import payouts error:", error)

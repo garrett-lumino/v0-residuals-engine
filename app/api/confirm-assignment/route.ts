@@ -91,8 +91,11 @@ async function syncPayoutsToAirtable(payoutIds: string[]) {
       if (payout.merchant_name) record.merchant_name = payout.merchant_name
       if (payout.payout_month) record.payout_month = payout.payout_month
       if (payout.payout_date) record.payout_date = payout.payout_date
-      if (payout.partner_airtable_id) record.partner_id = payout.partner_airtable_id
-      if (payout.partner_name) record.partner_name = payout.partner_name
+      // partner_name is a linked record field in Airtable - expects array of record IDs
+      // Only include if we have a valid Airtable record ID (starts with "rec")
+      if (payout.partner_airtable_id && payout.partner_airtable_id.startsWith("rec")) {
+        record.partner_name = [payout.partner_airtable_id]
+      }
       if (payout.paid_at) record.paid_at = payout.paid_at
       if (payout.partner_role) record.partner_role = payout.partner_role
       if (payout.payout_type) record.payout_type = payout.payout_type
@@ -418,15 +421,28 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    let airtableResult = { synced: 0 }
+    let airtableResult: { synced: number; error?: string } = { synced: 0 }
     if (allPayoutIds.length > 0) {
       airtableResult = await syncPayoutsToAirtable(allPayoutIds)
+      
+      // Log warning if Airtable sync failed (but don't fail the overall operation)
+      if (airtableResult.error) {
+        console.error("[confirm-assignment] Airtable sync failed:", airtableResult.error)
+        await logDebug(
+          "warning",
+          "api",
+          `Bulk confirm succeeded but Airtable sync failed: ${airtableResult.error}`,
+          { payoutIds: allPayoutIds, airtableError: airtableResult.error },
+          requestId,
+        )
+      }
     }
 
     await logDebug("info", "api", `Bulk confirm complete: ${eventsToConfirm.length} confirmed, ${eventsWithoutDeals.length + eventsWithoutParticipants.length} skipped, ${airtableResult.synced} synced to Airtable`, {
       confirmed: eventsToConfirm.length,
       skipped: eventsWithoutDeals.length + eventsWithoutParticipants.length,
       airtableSynced: airtableResult.synced,
+      airtableError: airtableResult.error,
     }, requestId)
 
     return NextResponse.json({
@@ -438,6 +454,7 @@ export async function POST(request: NextRequest) {
       skipped_missing_partner_ids: eventsWithBadParticipants.length,
       payouts_updated: !payoutsUpdateError,
       airtable_synced: airtableResult.synced,
+      airtable_error: airtableResult.error ? "Sync partially failed - will retry on next sync" : undefined,
       // Include details about skipped events so frontend can show them
       skipped_events: [
         ...eventsWithoutDeals.map((e) => ({ id: e.id, mid: e.mid, merchant: e.merchant_name, reason: "no_deal" })),

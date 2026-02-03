@@ -73,8 +73,12 @@ const formatPayoutForAirtable = (payout: PayoutWithPartner) => {
   const partnerName = payout.partner?.name || payout.partner_name
   const partnerRole = payout.partner?.role || payout.partner_role
 
-  if (partnerId) record.partner_id = partnerId
-  if (partnerName) record.partner_name = partnerName
+  // partner_name is a linked record field in Airtable - expects array of record IDs
+  // Only include if we have a valid Airtable record ID (starts with "rec")
+  if (partnerId && partnerId.startsWith("rec")) {
+    record.partner_name = [partnerId]
+  }
+  // partner_role is a select field that works normally
   if (partnerRole) record.partner_role = partnerRole
 
   if (payout.paid_at) record.paid_at = payout.paid_at

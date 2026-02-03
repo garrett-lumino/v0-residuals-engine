@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/db/server"
 import { logAction, logDebug } from "@/lib/utils/history"
+import { syncPayoutsToAirtable } from "@/lib/services/airtable-sync"
 import { type NextRequest, NextResponse } from "next/server"
 
 export async function POST(request: NextRequest) {
@@ -56,10 +57,30 @@ export async function POST(request: NextRequest) {
       requestId,
     )
 
+    // Sync updated payouts to Airtable
+    let airtableResult = { synced: 0, error: undefined as string | undefined }
+    if (data && data.length > 0) {
+      const payoutIds = data.map((p) => p.id)
+      airtableResult = await syncPayoutsToAirtable(payoutIds)
+      
+      if (airtableResult.error) {
+        console.error(`[mass-mark-paid] Airtable sync failed:`, airtableResult.error)
+        await logDebug(
+          "warning",
+          "api",
+          `Mass marked ${data.length} payouts as paid but Airtable sync failed`,
+          { payoutIds, airtableError: airtableResult.error },
+          requestId,
+        )
+      }
+    }
+
     return NextResponse.json({
       success: true,
       updated: data?.length || 0,
       message: `Marked ${data?.length || 0} payouts as paid`,
+      airtable_synced: airtableResult.synced,
+      airtable_error: airtableResult.error ? "Sync partially failed - will retry on next sync" : undefined,
     })
   } catch (error) {
     console.error("Error mass marking as paid:", error)
