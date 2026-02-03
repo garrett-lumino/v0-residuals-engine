@@ -2,15 +2,11 @@ import { NextResponse } from "next/server"
 
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || "appRygdwVIEtbUI1C"
-const AIRTABLE_TABLE_ID = process.env.AIRTABLE_TABLE_ID
+const AIRTABLE_TABLE_ID = "tblWZlEw6pM9ytA1x"
 
 export async function POST(request: Request) {
   if (!AIRTABLE_API_KEY) {
     return NextResponse.json({ error: "Missing AIRTABLE_API_KEY environment variable" }, { status: 500 })
-  }
-
-  if (!AIRTABLE_TABLE_ID) {
-    return NextResponse.json({ error: "Missing AIRTABLE_TABLE_ID environment variable" }, { status: 500 })
   }
 
   try {

@@ -1,7 +1,6 @@
 "use client"
 
 import Link from "next/link"
-import Image from "next/image"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 import {
@@ -53,17 +52,7 @@ export function Sidebar() {
   return (
     <div className="flex h-full w-64 flex-col border-r bg-card text-card-foreground">
       <div className="p-6">
-        <div className="flex flex-col items-center gap-3">
-          <Image
-            src="/lumino_logo_1x.png"
-            alt="Lumino Logo"
-            width={200}
-            height={50}
-            className="object-contain"
-            priority
-          />
-          <h1 className="text-xl font-bold tracking-tight">Residuals Engine</h1>
-        </div>
+        <h1 className="text-xl font-bold tracking-tight">Residuals Engine</h1>
       </div>
       <div className="flex-1 overflow-y-auto px-4">
         <nav className="space-y-1">

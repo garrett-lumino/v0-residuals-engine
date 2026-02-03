@@ -8,7 +8,7 @@ import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Card, CardContent } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Plus, AlertCircle, Search, Trash2, RotateCcw } from "lucide-react"
+import { Plus, AlertCircle, Search, Trash2 } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { useToast } from "@/hooks/use-toast"
 import {
@@ -34,7 +34,7 @@ interface UnassignedEvent {
   chargebacks: number
   raw_data: any
   assignment_status: string
-  deal_id?: string | null
+  deal_id?: string
   payout_type?: string
   is_held?: boolean
   hold_reason?: string
@@ -182,9 +182,7 @@ export function ConfirmedDealViewer({ event, events, isOpen = false, onClose, on
         participants: participants,
       })
 
-      // Use deal.id (UUID) not deal.deal_id (text ID like "deal_abc123")
-      // Use /api/residuals/deals endpoint which properly handles payout creation/updates
-      const response = await fetch(`/api/residuals/deals/${deal.id}`, {
+      const response = await fetch(`/api/deals/${deal.deal_id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -269,47 +267,6 @@ export function ConfirmedDealViewer({ event, events, isOpen = false, onClose, on
       toast({
         title: "Error",
         description: "An unexpected error occurred. Please try again.",
-        variant: "destructive",
-      })
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  /**
-   * Unconfirm - revert this confirmed deal back to pending_confirmation
-   * Allows user to make further changes after accidental confirmation
-   */
-  const handleUnconfirm = async () => {
-    if (!event) return
-    setIsLoading(true)
-
-    try {
-      const response = await fetch("/api/unconfirm-assignment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ event_ids: [event.id] }),
-      })
-
-      if (response.ok) {
-        toast({
-          title: "Confirmation Reverted",
-          description: "The deal has been moved back to pending confirmation for editing.",
-        })
-        onClose?.()
-        onComplete?.()
-      } else {
-        const data = await response.json()
-        toast({
-          title: "Unconfirm Failed",
-          description: data.error || "Failed to revert confirmation",
-          variant: "destructive",
-        })
-      }
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "An error occurred. Please try again.",
         variant: "destructive",
       })
     } finally {
@@ -723,21 +680,10 @@ export function ConfirmedDealViewer({ event, events, isOpen = false, onClose, on
           </div>
 
           <div className="flex justify-between pt-4 border-t">
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                onClick={handleUnconfirm}
-                disabled={isLoading}
-                className="border-orange-500 text-orange-600 hover:bg-orange-50"
-              >
-                <RotateCcw className="h-4 w-4 mr-2" />
-                Unconfirm
-              </Button>
-              <Button variant="destructive" onClick={() => setIsDeleteDialogOpen(true)} disabled={isLoading}>
-                <Trash2 className="h-4 w-4 mr-2" />
-                Delete Deal
-              </Button>
-            </div>
+            <Button variant="destructive" onClick={() => setIsDeleteDialogOpen(true)} disabled={isLoading}>
+              <Trash2 className="h-4 w-4 mr-2" />
+              Delete Deal
+            </Button>
             <div className="flex gap-2">
               {isEditing ? (
                 <>

@@ -18,9 +18,7 @@ export async function DELETE(request: NextRequest, { params }: { params: Promise
 
     console.log("[v0] Found event:", event?.merchant_name, "status:", event?.assignment_status)
 
-    // Allow deletion of unassigned and pending_confirmation events
-    // Confirmed events should use the /delete endpoint instead
-    const allowedStatuses = ["unassigned", "pending", "pending_confirmation", null, undefined]
+    const allowedStatuses = ["unassigned", "pending", null, undefined]
     if (event.assignment_status && !allowedStatuses.includes(event.assignment_status)) {
       return NextResponse.json({ error: "Can only delete unassigned or pending events" }, { status: 400 })
     }

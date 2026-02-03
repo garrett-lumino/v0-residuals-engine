@@ -1,33 +1,13 @@
 import { createClient } from "@/lib/db/server"
 import { NextResponse } from "next/server"
 
-/**
- * Payout with joined partner data from partners table
- */
-interface PayoutWithPartner {
-  payout_month: string | null
-  partner_payout_amount: number | null
-  partner_airtable_id?: string | null
-  partner: {
-    external_id: string | null
-  } | null
-}
-
 export async function GET() {
   try {
     const supabase = await createClient()
 
-    // Query with JOIN to partners table
     const { data: payouts, error } = await supabase
       .from("payouts")
-      .select(`
-        payout_month,
-        partner_payout_amount,
-        partner_airtable_id,
-        partner:partners!partner_id (
-          external_id
-        )
-      `) as { data: PayoutWithPartner[] | null; error: any }
+      .select("payout_month, partner_airtable_id, partner_payout_amount")
 
     if (error) throw error
 
@@ -58,11 +38,8 @@ export async function GET() {
       const data = monthMap.get(month)!
       data.total_amount += Number(payout.partner_payout_amount) || 0
       data.total_payouts += 1
-
-      // Prefer joined partner data, fall back to legacy column
-      const agentId = payout.partner?.external_id || payout.partner_airtable_id
-      if (agentId) {
-        data.unique_agents.add(agentId)
+      if (payout.partner_airtable_id) {
+        data.unique_agents.add(payout.partner_airtable_id)
       }
     }
 

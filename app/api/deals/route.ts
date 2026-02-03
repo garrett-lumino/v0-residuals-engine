@@ -2,7 +2,6 @@ import { createClient } from "@/lib/db/server"
 import { logAction, logDebug } from "@/lib/utils/history"
 import { type NextRequest, NextResponse } from "next/server"
 import { normalizeParticipants } from "@/lib/utils/normalize-participant"
-import { writeDealParticipants } from "@/lib/services/deal-participants-writer"
 
 export async function POST(request: NextRequest) {
   const requestId = crypto.randomUUID()
@@ -88,12 +87,6 @@ export async function POST(request: NextRequest) {
         newData: { participants_json: participants, payout_type, assigned_agent_name: assignedAgentName },
         requestId,
       })
-
-      // Dual-write to deal_participants table (controlled by feature flag)
-      const dualWriteResult = await writeDealParticipants(existingDeal.id, participants)
-      if (!dualWriteResult.success) {
-        console.warn("[deals] Dual-write failed:", dualWriteResult.error)
-      }
     } else {
       const { data: newDeal, error: insertError } = await supabase
         .from("deals")
@@ -132,12 +125,6 @@ export async function POST(request: NextRequest) {
         newData: { deal_id: dealUniqueId, mid, participants_json: participants, payout_type },
         requestId,
       })
-
-      // Dual-write to deal_participants table (controlled by feature flag)
-      const dualWriteResult = await writeDealParticipants(newDeal.id, participants)
-      if (!dualWriteResult.success) {
-        console.warn("[deals] Dual-write failed:", dualWriteResult.error)
-      }
     }
 
     const { error: updateEventsError } = await supabase

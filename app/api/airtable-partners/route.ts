@@ -8,7 +8,7 @@ interface AirtableRecord {
   id: string
   fields: {
     "Partner Name"?: string
-    "Primary Email"?: string
+    Email?: string
     Role?: string
     "Default Split %"?: number
     Status?: string
@@ -64,7 +64,7 @@ export async function GET(request: NextRequest) {
       .map((record) => ({
         id: record.id, // Airtable record ID (e.g., "recABC123")
         name: record.fields["Partner Name"] || "",
-        email: record.fields["Primary Email"] || "",
+        email: record.fields["Email"] || "",
         role: record.fields["Role"] || "Partner",
         default_split_pct: record.fields["Default Split %"] || 0,
         status: record.fields["Status"] || "Active",

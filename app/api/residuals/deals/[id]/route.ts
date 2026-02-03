@@ -201,8 +201,7 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
                 mid: templatePayout.mid,
                 merchant_name: templatePayout.merchant_name,
                 payout_month: templatePayout.payout_month,
-                // Use template payout_type first, fall back to current deal payout_type, then default to "residual"
-                payout_type: templatePayout.payout_type || currentDeal.payout_type || "residual",
+                payout_type: templatePayout.payout_type || "residual",
                 volume: templatePayout.volume,
                 fees: templatePayout.fees,
                 adjustments: templatePayout.adjustments,

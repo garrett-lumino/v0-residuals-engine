@@ -2,30 +2,6 @@ import { createClient } from "@/lib/db/server"
 import { type NextRequest, NextResponse } from "next/server"
 import type { PayoutSummary } from "@/lib/types/database"
 
-/**
- * Payout with joined partner data from partners table
- */
-interface PayoutWithPartner {
-  id: string
-  mid: string | null
-  payout_month: string | null
-  partner_payout_amount: number | null
-  paid_status: string | null
-  csv_data_id: string | null
-  partner_split_pct: number | null
-  // Legacy fields (for backward compatibility during migration)
-  partner_airtable_id?: string | null
-  partner_name?: string | null
-  partner_role?: string | null
-  // Joined partner data from partners table
-  partner: {
-    external_id: string | null
-    name: string
-    role: string
-  } | null
-  [key: string]: any // Allow other fields for raw format
-}
-
 export async function GET(request: NextRequest) {
   try {
     const searchParams = request.nextUrl.searchParams
@@ -33,23 +9,11 @@ export async function GET(request: NextRequest) {
     const paidStatus = searchParams.get("status") // 'paid', 'unpaid', 'all'
     const format = searchParams.get("format") // 'raw' or 'summary' (default)
     const csvDataId = searchParams.get("csv_data_id")
-    const mid = searchParams.get("mid") // Filter by MID
     const includeZero = searchParams.get("includeZero") === "true" // New param to optionally include 0% payouts
 
     const supabase = await createClient()
 
-    // Query with JOIN to partners table for partner data
-    let baseQuery = supabase
-      .from("payouts")
-      .select(`
-        *,
-        partner:partners!partner_id (
-          external_id,
-          name,
-          role
-        )
-      `)
-      .order("payout_month", { ascending: false })
+    let baseQuery = supabase.from("payouts").select("*").order("payout_month", { ascending: false })
 
     if (!includeZero) {
       baseQuery = baseQuery.gt("partner_split_pct", 0)
@@ -65,10 +29,6 @@ export async function GET(request: NextRequest) {
 
     if (csvDataId) {
       baseQuery = baseQuery.eq("csv_data_id", csvDataId)
-    }
-
-    if (mid) {
-      baseQuery = baseQuery.eq("mid", mid)
     }
 
     const allPayouts: any[] = []
@@ -134,15 +94,12 @@ export async function GET(request: NextRequest) {
     // We need to group by partner and calculate totals
     const summaryMap = new Map<string, PayoutSummary>()
 
-    allPayouts.forEach((row: PayoutWithPartner) => {
-      // Prefer joined partner data, fall back to legacy columns
-      const partnerId = row.partner?.external_id || row.partner_airtable_id
-      const partnerName = row.partner?.name || row.partner_name || "Unknown Partner"
-      const partnerRole = row.partner?.role || row.partner_role || "Partner"
-      const amount = Number.parseFloat(String(row.partner_payout_amount)) || 0
+    allPayouts.forEach((row: any) => {
+      const partnerId = row.partner_airtable_id
+      const partnerName = row.partner_name || "Unknown Partner"
+      const partnerRole = row.partner_role || "Partner"
+      const amount = Number.parseFloat(row.partner_payout_amount) || 0
       const isPaid = row.paid_status === "paid"
-
-      if (!partnerId) return // Skip if no partner ID
 
       if (!summaryMap.has(partnerId)) {
         summaryMap.set(partnerId, {
