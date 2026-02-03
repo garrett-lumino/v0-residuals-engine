@@ -3,6 +3,7 @@ import { type NextRequest, NextResponse } from "next/server"
 import type { ApiResponse } from "@/lib/types/api"
 import type { Deal, DealParticipant } from "@/lib/types/database"
 import { normalizeParticipants } from "@/lib/utils/normalize-participant"
+import { writeDealParticipants } from "@/lib/services/deal-participants-writer"
 
 export async function POST(request: NextRequest) {
   try {
@@ -72,6 +73,12 @@ export async function POST(request: NextRequest) {
       }
 
       dealId = existingDeal.id
+
+      // Dual-write to deal_participants table (controlled by feature flag)
+      const dualWriteResult = await writeDealParticipants(existingDeal.id, participants)
+      if (!dualWriteResult.success) {
+        console.warn("[residuals/deals] Dual-write failed:", dualWriteResult.error)
+      }
     } else {
       // Create new deal
       const { data: newDeal, error: insertError } = await supabase
@@ -95,6 +102,12 @@ export async function POST(request: NextRequest) {
       }
 
       dealId = newDeal.id
+
+      // Dual-write to deal_participants table (controlled by feature flag)
+      const dualWriteResult = await writeDealParticipants(newDeal.id, participants)
+      if (!dualWriteResult.success) {
+        console.warn("[residuals/deals] Dual-write failed:", dualWriteResult.error)
+      }
     }
 
     // Update csv_data records with deal assignment

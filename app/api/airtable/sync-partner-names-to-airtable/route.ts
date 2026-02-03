@@ -4,6 +4,19 @@ import { NextResponse } from "next/server"
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID
 
+/**
+ * Payout with joined partner data from partners table
+ */
+interface PayoutWithPartner {
+  id: string
+  partner_name?: string | null
+  partner_airtable_id?: string | null
+  partner: {
+    external_id: string | null
+    name: string
+  } | null
+}
+
 export async function POST() {
   if (!AIRTABLE_API_KEY || !AIRTABLE_BASE_ID) {
     return NextResponse.json({ error: "Missing Airtable API key or Base ID in environment variables" }, { status: 500 })
@@ -18,20 +31,36 @@ export async function POST() {
     let hasMore = true
 
     while (hasMore) {
+      // Query with JOIN to partners table for partner names
       const { data: payouts, error: payoutsError } = await supabase
         .from("payouts")
-        .select("id, partner_name, partner_airtable_id")
-        .range(page * pageSize, (page + 1) * pageSize - 1)
+        .select(`
+          id,
+          partner_name,
+          partner_airtable_id,
+          partner:partners!partner_id (
+            external_id,
+            name
+          )
+        `)
+        .range(page * pageSize, (page + 1) * pageSize - 1) as { data: PayoutWithPartner[] | null; error: any }
 
       if (payoutsError) {
         return NextResponse.json({ error: payoutsError.message }, { status: 500 })
       }
 
       if (payouts && payouts.length > 0) {
-        const processedPayouts = payouts.map((p: any) => ({
-          id: p.id,
-          partner_name: p.partner_airtable_id === "lumino-company" ? "Lumino (Company)" : p.partner_name,
-        }))
+        const processedPayouts = payouts.map((p) => {
+          // Get partner ID from joined data or legacy column
+          const partnerId = p.partner?.external_id || p.partner_airtable_id
+          // Get partner name from joined data or legacy column
+          const name = p.partner?.name || p.partner_name
+
+          return {
+            id: p.id,
+            partner_name: partnerId === "lumino-company" ? "Lumino (Company)" : name,
+          }
+        })
         allPayouts = allPayouts.concat(processedPayouts)
         page++
         hasMore = payouts.length === pageSize

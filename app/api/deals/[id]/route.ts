@@ -2,6 +2,7 @@ import { createClient } from "@/lib/db/server"
 import { type NextRequest, NextResponse } from "next/server"
 import { logActionAsync } from "@/lib/utils/history"
 import { normalizeParticipant } from "@/lib/utils/normalize-participant"
+import { writeDealParticipants, deleteDealParticipants } from "@/lib/services/deal-participants-writer"
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -122,6 +123,14 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       newData: data,
       requestId,
     })
+
+    // Dual-write to deal_participants table if participants_json was updated
+    if (body.participants_json && Array.isArray(body.participants_json)) {
+      const dualWriteResult = await writeDealParticipants(id, body.participants_json)
+      if (!dualWriteResult.success) {
+        console.warn("[deals PATCH] Dual-write failed:", dualWriteResult.error)
+      }
+    }
 
     return NextResponse.json({ success: true, data })
   } catch (error) {
@@ -257,6 +266,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
       requestId,
     })
 
+    // Dual-write to deal_participants table (controlled by feature flag)
+    const dualWriteResult = await writeDealParticipants(id, normalizedParticipants)
+    if (!dualWriteResult.success) {
+      console.warn("[PUT deals] Dual-write failed:", dualWriteResult.error)
+    }
+
     return NextResponse.json({ success: true, data: updatedDeal })
   } catch (error) {
     console.error("[PUT deals] Error:", error)
@@ -275,6 +290,9 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
 
     const { error: payoutsError } = await supabase.from("payouts").delete().eq("deal_id", id)
     if (payoutsError) console.error("Error deleting payouts:", payoutsError)
+
+    // Delete from deal_participants table (controlled by feature flag)
+    await deleteDealParticipants(id)
 
     // DELETE csv_data records linked to this deal (not reset - full delete)
     const { error: csvError } = await supabase

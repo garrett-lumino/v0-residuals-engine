@@ -61,7 +61,8 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       payout_date: event.date,
       mid: event.mid,
       merchant_name: event.merchant_name,
-      payout_type: event.payout_type,
+      // Use event payout_type first, fall back to deal payout_type, then default to "residual"
+      payout_type: event.payout_type || deal.payout_type || "residual",
       volume: event.volume || 0,
       fees: event.fees || 0,
       adjustments: event.adjustments || 0,
