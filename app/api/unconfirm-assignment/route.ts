@@ -1,6 +1,7 @@
 import { createClient } from "@/lib/db/server"
 import { type NextRequest, NextResponse } from "next/server"
 import { logActionAsync, logDebug, generateRequestId } from "@/lib/utils/history"
+import { syncPayoutsToAirtable } from "@/lib/services/airtable-sync"
 
 /**
  * Unconfirm Assignment API
@@ -68,16 +69,27 @@ export async function POST(request: NextRequest) {
     }
 
     // Update payouts status back to pending (keeping the payout records intact)
-    const { error: payoutsUpdateError } = await supabase
+    const { data: updatedPayouts, error: payoutsUpdateError } = await supabase
       .from("payouts")
       .update({
         assignment_status: "pending",
         updated_at: new Date().toISOString(),
       })
       .in("csv_data_id", confirmedEventIds)
+      .select("id")
 
     if (payoutsUpdateError) {
       console.error("[unconfirm-assignment] Error updating payouts:", payoutsUpdateError)
+    }
+
+    // Sync updated payouts to Airtable
+    let airtableResult = { synced: 0, error: undefined as string | undefined }
+    if (updatedPayouts && updatedPayouts.length > 0) {
+      const payoutIds = updatedPayouts.map((p) => p.id)
+      airtableResult = await syncPayoutsToAirtable(payoutIds)
+      if (airtableResult.error) {
+        console.error("[unconfirm-assignment] Airtable sync failed:", airtableResult.error)
+      }
     }
 
     // Log the action for audit trail
@@ -100,7 +112,7 @@ export async function POST(request: NextRequest) {
       "info",
       "api",
       `Unconfirm complete: ${confirmedEvents.length} reverted to pending`,
-      { unconfirmed: confirmedEvents.length },
+      { unconfirmed: confirmedEvents.length, airtableSynced: airtableResult.synced },
       requestId
     )
 
@@ -108,6 +120,7 @@ export async function POST(request: NextRequest) {
       success: true,
       unconfirmed: confirmedEvents.length,
       payouts_updated: !payoutsUpdateError,
+      airtable_synced: airtableResult.synced,
     })
   } catch (error: any) {
     console.error("[unconfirm-assignment] Error:", error)

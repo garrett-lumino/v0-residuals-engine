@@ -1,5 +1,6 @@
 import { createClient } from "@/lib/db/server"
 import { logAction, logDebug } from "@/lib/utils/history"
+import { syncPayoutsToAirtable } from "@/lib/services/airtable-sync"
 import { type NextRequest, NextResponse } from "next/server"
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -49,12 +50,27 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       requestId,
     })
 
+    // Sync to Airtable
+    const airtableResult = await syncPayoutsToAirtable([id])
+    if (airtableResult.error) {
+      console.error(`[mark-paid] Airtable sync failed for payout ${id}:`, airtableResult.error)
+      // Log but don't fail - database update succeeded
+      await logDebug(
+        "warning",
+        "api",
+        `Payout ${id} marked as ${newStatus} but Airtable sync failed`,
+        { id, airtableError: airtableResult.error },
+        requestId,
+      )
+    }
+
     return NextResponse.json({
       success: true,
       data: {
         id,
         paid_status: newStatus,
         message: `Payout marked as ${newStatus}`,
+        airtable_synced: airtableResult.synced > 0,
       },
     })
   } catch (error) {
